@@ -1,0 +1,7 @@
+data/
+cache/
+__pycache__/
+.pytest_cache/
+*.pyc
+.DS_Store
+tests/e2e/out/

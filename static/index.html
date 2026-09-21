@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sponge Screener</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/style.css">
+  <script type="module" src="/static/app.js"></script>
+</head>
+<body data-mode="screening">
+
+  <svg class="sprite" width="0" height="0" aria-hidden="true" focusable="false">
+    <symbol id="i-play" viewBox="0 0 16 16"><path d="M4 2.3v11.4L13.4 8z" stroke="none"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 16 16"><path d="M3.4 2.5h3.2v11H3.4zM9.4 2.5h3.2v11H9.4z" stroke="none"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 16 16"><path d="M2.5 2.5h11v11h-11zM8 2.5v11M2.5 8h11" fill="none" stroke-width="1.3"/></symbol>
+    <symbol id="i-check" viewBox="0 0 16 16"><path d="M3 8.6l3.2 3.2L13 4.6" fill="none" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-next" viewBox="0 0 16 16"><path d="M3 2.3v11.4L10.6 8zM11.4 2.5h2.2v11h-2.2z" stroke="none"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 16 16"><circle cx="10" cy="6" r="3.4" stroke="none"/><path d="M7.6 8.4L2.6 13.4" fill="none" stroke-width="1.7" stroke-linecap="round"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.5-3.6" fill="none" stroke-width="1.6" stroke-linecap="round"/><path d="M13.3 2v3.2h-3.2" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-queue" viewBox="0 0 16 16"><path d="M8 2v7.6M4.8 6.6L8 9.8l3.2-3.2M3 13.2h10" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-close" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke-width="1.7" stroke-linecap="round"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 16 16"><path d="M1.8 4.2c0-.6.4-1 1-1h3.4l1.4 1.5h5.6c.6 0 1 .4 1 1v6.6c0 .6-.4 1-1 1H2.8c-.6 0-1-.4-1-1z" fill="none" stroke-width="1.3" stroke-linejoin="round"/></symbol>
+    <symbol id="i-up" viewBox="0 0 16 16"><path d="M8 13V3.4M4 7.2l4-4 4 4" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 16 16"><path d="M3.5 8h9" fill="none" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 16 16"><path d="M3.5 8h9M8 3.5v9" fill="none" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  </svg>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <h1 class="brand-name">Sponge Screener</h1>
+    </div>
+    <p id="current-video" class="current-video" title="The video that is open now.">No video open</p>
+    <div class="topbar-tools">
+      <label class="field-inline" for="annotator">
+        <span class="field-label">Annotator</span>
+        <input id="annotator" class="input input-short" type="text" maxlength="12" autocomplete="off" spellcheck="false"
+               title="You type your initials here. The server writes them into the Annotator column of every sighting you save.">
+      </label>
+      <button id="export" type="button" class="button"
+              title="You export the ground-truth package. The server copies both tables and every frame and crop into a dated folder inside the OnDeck Drive folder.">Export</button>
+      <button id="help-toggle" type="button" class="button button-icon" aria-label="Keyboard shortcuts" aria-expanded="false" aria-controls="help"
+              title="You open the list of keyboard shortcuts. The ? key opens and closes it too.">?</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+
+    <aside class="panel browser" aria-label="Video browser">
+      <div class="panel-head">
+        <h2 class="panel-title">Videos</h2>
+        <span id="stale-badge" class="badge badge-warn" hidden
+              title="The server could not reach the bucket, so this list comes from the copy saved on this Mac. You can press Refresh to try again.">offline copy</span>
+      </div>
+      <nav id="breadcrumb" class="breadcrumb" aria-label="Folder path"></nav>
+      <div class="search-row">
+        <input id="search" class="input" type="search" placeholder="Search this folder" autocomplete="off" spellcheck="false" aria-label="Search this folder"
+               title="You type part of a folder or file name to narrow this list. Enter opens the first match.">
+        <button id="refresh" type="button" class="button button-icon" aria-label="Refresh this folder"
+                title="You ask the server to list this folder from the bucket again. Use it after new videos were uploaded.">
+          <svg class="icon" aria-hidden="true"><use href="#i-refresh"></use></svg>
+        </button>
+      </div>
+      <div id="catalog-error" class="notice notice-error" role="alert" hidden>
+        <p id="catalog-error-text" class="notice-text"></p>
+        <button id="catalog-retry" type="button" class="button"
+                title="You ask the server for this folder again.">Retry</button>
+      </div>
+      <div class="panel-scroll" id="browser-scroll">
+        <ul id="folders" class="rows" aria-label="Folders"></ul>
+        <ul id="videos" class="rows" aria-label="Videos"></ul>
+        <p id="browser-empty" class="empty" hidden></p>
+      </div>
+    </aside>
+
+    <section class="center" aria-label="Player">
+      <div id="stage" class="stage">
+        <video id="video" class="stage-video" muted playsinline preload="auto" disablepictureinpicture tabindex="-1"></video>
+        <!-- No title here on purpose: a hover tooltip would cover the sponges under the pointer.
+             The same words stay on screen in the line under the species strip. -->
+        <canvas id="overlay" class="stage-overlay" role="img"
+                aria-label="Video picture. You click a sponge to pause the video and mark a point, or you drag to draw a box around it."></canvas>
+        <div id="stage-status" class="stage-status" role="status" aria-live="polite">
+          <p id="stage-status-text" class="stage-status-text">Pick a video from the list on the left. Then click a sponge, press its number key, and press Enter.</p>
+          <button id="stage-action" type="button" class="button" hidden
+                  title="You start this video again from the server.">Retry</button>
+        </div>
+      </div>
+
+      <div class="transport">
+        <div class="scrub-wrap">
+          <div id="scrub-marks" class="scrub-marks" aria-hidden="true"></div>
+          <input id="scrub" class="scrub" type="range" min="0" max="0" step="0.01" value="0" aria-label="Position in the video" disabled
+                 title="You drag to move through the video. The pink ticks show the sightings saved in this video.">
+        </div>
+        <div class="transport-row">
+          <button id="play" type="button" class="button button-icon" aria-label="Play" disabled
+                  title="You play or pause the video. The Space key does the same.">
+            <svg class="icon" aria-hidden="true"><use id="play-icon" href="#i-play"></use></svg>
+          </button>
+          <span id="time" class="time" title="The position in the video and its length, as minutes and seconds.">--:-- / --:--</span>
+          <span class="transport-gap"></span>
+          <div class="speed" role="group" aria-label="Playback speed">
+            <button id="slower" type="button" class="button button-icon" aria-label="Slower"
+                    title="You slow playback down one step. The [ key does the same.">
+              <svg class="icon" aria-hidden="true"><use href="#i-minus"></use></svg>
+            </button>
+            <span id="speed" class="speed-value" title="The playback speed. It runs from 0.5x to 3x.">1x</span>
+            <button id="faster" type="button" class="button button-icon" aria-label="Faster"
+                    title="You speed playback up one step. The ] key does the same.">
+              <svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg>
+            </button>
+          </div>
+          <button id="grid" type="button" class="button button-icon" aria-label="Quadrant grid and center line" aria-pressed="true"
+                  title="You show or hide the quadrant lines and the center line. The G key does the same.">
+            <svg class="icon" aria-hidden="true"><use href="#i-grid"></use></svg>
+          </button>
+          <button id="done" type="button" class="button button-toggle" aria-pressed="false" disabled
+                  title="You mark this video as fully screened. OnDeck then treats a target species with no rows here as absent. The D key does the same.">
+            <svg class="icon" aria-hidden="true"><use href="#i-check"></use></svg>
+            <span id="done-label">Done</span>
+          </button>
+          <button id="next" type="button" class="button button-icon" aria-label="Next video"
+                  title="You open the next video in the list. The N key does the same.">
+            <svg class="icon" aria-hidden="true"><use href="#i-next"></use></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="deck">
+        <div id="species-error" class="notice notice-error" role="alert" hidden>
+          <p id="species-error-text" class="notice-text"></p>
+          <button id="species-retry" type="button" class="button"
+                  title="You ask the server for the species list again.">Retry</button>
+        </div>
+        <div id="pins" class="pins" role="group" aria-label="Pinned species, keys 1 to 9 and 0"></div>
+
+        <div class="markbar">
+          <div class="markbar-summary">
+            <span id="mode-pill" class="mode-pill" title="Screening: the video keys are active. Marking: a mark waits for its species, and the number keys choose one.">Screening</span>
+            <p id="mark-summary" class="mark-summary" role="status" aria-live="polite">Click a sponge in the video to mark it.</p>
+          </div>
+          <p id="mark-error" class="mark-error" role="alert" hidden></p>
+          <div class="markbar-controls">
+            <div class="combo">
+              <input id="filter" class="input" type="text" placeholder="Filter species" autocomplete="off" spellcheck="false"
+                     role="combobox" aria-expanded="false" aria-controls="matches" aria-autocomplete="list" aria-label="Filter species"
+                     title="You type part of a species name or code. Up and Down move through the matches, and Enter chooses the highlighted one.">
+              <ul id="matches" class="matches" role="listbox" aria-label="Matching species" hidden></ul>
+            </div>
+            <input id="note" class="input note" type="text" maxlength="500" placeholder="Note (optional)" autocomplete="off" aria-label="Note" disabled
+                   title="You add an optional note. The server appends it after the quadrant phrase in the Notes column.">
+            <div class="markbar-buttons">
+              <button id="save" type="button" class="button button-primary" disabled
+                      title="You save this sighting and the video plays again. The Enter key does the same.">Save</button>
+              <button id="save-stay" type="button" class="button" disabled
+                      title="You save this sighting and the video stays paused, ready for another sponge in the same frame. Shift+Enter does the same.">Save and stay</button>
+              <button id="cancel" type="button" class="button" disabled
+                      title="You discard this mark and the video plays again. The Escape key does the same.">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="panel log" aria-label="Sightings and tally">
+      <section class="log-section log-sightings">
+        <div class="panel-head">
+          <h2 class="panel-title">Sightings in this video</h2>
+          <span id="sightings-count" class="count" title="The number of sightings saved in this video.">0</span>
+        </div>
+        <div class="panel-scroll">
+          <ul id="sightings" class="rows"></ul>
+          <p id="sightings-empty" class="empty">No sightings in this video yet.</p>
+        </div>
+      </section>
+      <section class="log-section log-tally">
+        <div class="panel-head">
+          <h2 class="panel-title">Species tally</h2>
+          <span id="tally-target" class="count" title="Each pinned species needs at least this many sightings across all videos.">target 3</span>
+        </div>
+        <div class="panel-scroll">
+          <table id="tally" class="tally">
+            <thead>
+              <tr>
+                <th scope="col" title="The species code. Hover a row for the full name.">Species</th>
+                <th scope="col" class="num" title="Sightings across all videos. Rows under the target are highlighted.">Seen</th>
+                <th scope="col" class="num" title="The number of videos with at least one sighting of this species.">Videos</th>
+                <th scope="col" class="num" title="The earliest survey year with a sighting of this species.">First</th>
+              </tr>
+            </thead>
+            <tbody id="tally-rows"></tbody>
+          </table>
+          <p id="tally-total" class="empty" title="The number of sightings saved so far, across every video.">0 sightings across all videos.</p>
+          <p id="tally-empty" class="empty" hidden>The tally did not load.</p>
+        </div>
+      </section>
+    </aside>
+
+  </main>
+
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+
+  <div id="help" class="help" role="dialog" aria-label="Keyboard shortcuts" hidden>
+    <div class="help-head">
+      <h2 class="panel-title">Keyboard shortcuts</h2>
+      <button id="help-close" type="button" class="button button-icon" aria-label="Close the shortcuts card"
+              title="You close this card. The Escape key and the ? key do the same.">
+        <svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg>
+      </button>
+    </div>
+    <div class="help-columns">
+      <section>
+        <h3 class="help-title">Screening (the video keys)</h3>
+        <dl class="keys">
+          <div><dt><kbd>Click</kbd></dt><dd>Pause and mark a point</dd></div>
+          <div><dt><kbd>Drag</kbd></dt><dd>Pause and draw a box</dd></div>
+          <div><dt><kbd>Space</kbd></dt><dd>Play or pause</dd></div>
+          <div><dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Jump 2 seconds</dd></div>
+          <div><dt><kbd>,</kbd> <kbd>.</kbd></dt><dd>Step one frame (1/30 s)</dd></div>
+          <div><dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>Slower or faster, 0.5x to 3x</dd></div>
+          <div><dt><kbd>Home</kbd></dt><dd>Back to the start</dd></div>
+          <div><dt><kbd>G</kbd></dt><dd>Show or hide the grid and center line</dd></div>
+          <div><dt><kbd>Z</kbd></dt><dd>Remove the last sighting in this video</dd></div>
+          <div><dt><kbd>D</kbd></dt><dd>Mark the video done, or reopen it</dd></div>
+          <div><dt><kbd>N</kbd></dt><dd>Open the next video in the list</dd></div>
+          <div><dt><kbd>?</kbd></dt><dd>Open or close this card</dd></div>
+        </dl>
+      </section>
+      <section>
+        <h3 class="help-title">Marking (after a click or drag)</h3>
+        <dl class="keys">
+          <div><dt><kbd>1</kbd> to <kbd>9</kbd>, <kbd>0</kbd></dt><dd>Choose a pinned species</dd></div>
+          <div><dt><kbd>A</kbd> to <kbd>Z</kbd></dt><dd>Filter all species by name or code</dd></div>
+          <div><dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Move through the matches</dd></div>
+          <div><dt><kbd>Enter</kbd> in the filter</dt><dd>Choose the highlighted match</dd></div>
+          <div><dt><kbd>Tab</kbd></dt><dd>Go to the note</dd></div>
+          <div><dt><kbd>Enter</kbd></dt><dd>Save and play</dd></div>
+          <div><dt><kbd>Shift</kbd>+<kbd>Enter</kbd></dt><dd>Save and stay paused</dd></div>
+          <div><dt><kbd>Esc</kbd></dt><dd>Cancel the mark and play</dd></div>
+          <div><dt><kbd>Click</kbd> or <kbd>Drag</kbd></dt><dd>Replace the mark</dd></div>
+          <div><dt><kbd>,</kbd> <kbd>.</kbd></dt><dd>Step one frame before saving</dd></div>
+        </dl>
+        <p class="help-note">Time each sighting at the moment the sponge sits closest to the center line.</p>
+      </section>
+    </div>
+  </div>
+
+</body>
+</html>
