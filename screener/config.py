@@ -29,7 +29,7 @@ CACHE_KEEP_SECONDS = 600
 CATALOG_MAX_AGE_SECONDS = 86400
 
 HOST = "127.0.0.1"
-PORT = 8765
+PORT = 8770
 MAX_BODY_BYTES = 120 * 1024 * 1024
 
 # Extensions Chrome plays directly, and every extension the catalog lists.

@@ -19,7 +19,7 @@ PNG, in the layout of the January 2026 package sent to OnDeck AI.
 python3 screener.py
 ```
 
-The server binds to `127.0.0.1:8765` and opens Chrome. Options: `--port`,
+The server binds to `127.0.0.1:8770` and opens Chrome. Options: `--port`,
 `--no-browser`, `--data-dir`, `--cache-dir`, `--bucket-url`.
 
 ## Screening

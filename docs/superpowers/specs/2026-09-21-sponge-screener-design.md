@@ -26,7 +26,7 @@ saves a full frame and a sponge crop with every sighting for other training work
 
 ## Architecture
 
-A local app. `python3 screener.py` starts a server on `127.0.0.1:8765` and opens Chrome.
+A local app. `python3 screener.py` starts a server on `127.0.0.1:8770` and opens Chrome.
 Python standard library only. ffmpeg runs only for formats Chrome cannot play.
 
 | Unit | One job | Depends on |

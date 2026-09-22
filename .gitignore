@@ -5,3 +5,5 @@ __pycache__/
 *.pyc
 .DS_Store
 tests/e2e/out/
+.claude/
+exports/
