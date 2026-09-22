@@ -1361,3 +1361,132 @@ body[data-mode="marking"] .mark-summary {
     animation: none;
   }
 }
+
+
+/* ----- species guide ----- */
+
+.guide {
+  position: fixed;
+  top: 54px;
+  right: 12px;
+  z-index: 55;
+  display: flex;
+  flex-direction: column;
+  width: min(760px, calc(100vw - 24px));
+  max-height: calc(100vh - 66px);
+  padding: 4px 14px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: #1b1b1b;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.65);
+}
+
+.guide-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+}
+
+.guide-pick {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.guide-pick .input {
+  width: 100%;
+}
+
+.guide-count {
+  flex: 0 0 auto;
+  color: var(--text-3);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.guide-text {
+  flex: 0 0 auto;
+  max-height: 34vh;
+  overflow-y: auto;
+  margin: 0 0 10px;
+  padding-right: 6px;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-line;
+}
+
+.guide-images {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  grid-auto-rows: 118px;
+  align-content: start;
+  gap: 8px;
+  overflow-y: auto;
+  min-height: 120px;
+}
+
+/* Fixed tile height: an image sized by aspect ratio counts as zero height
+   when Chrome sizes auto grid rows inside a flex column, so rows collapsed. */
+.guide-image {
+  display: block;
+  height: 118px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg-2);
+  cursor: zoom-in;
+  overflow: hidden;
+}
+
+.guide-image img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.guide-image:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.guide-large {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.82);
+  cursor: zoom-out;
+}
+
+.guide-large img {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 6px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8);
+}
+
+.guide-empty {
+  grid-column: 1 / -1;
+  padding: 18px 0;
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}

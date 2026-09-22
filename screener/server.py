@@ -47,8 +47,11 @@ INDEX_FILE = "index.html"
 # Route prefixes.
 STATIC_ROUTE = "/static/"
 MEDIA_ROUTE = "/media/"
+GUIDE_ROUTE = "/guide/"
 OBSERVATION_ROUTE = "/api/observations/"
 MEDIA_FOLDERS = ("frames", "crops")
+GUIDE_FOLDER = "guide"
+GUIDE_MANIFEST = "guide.json"
 
 # Request rules.
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost")
@@ -647,6 +650,7 @@ class _Handler(BaseHTTPRequestHandler):
     PREFIX_ROUTES: Tuple[Tuple[str, Dict[str, str]], ...] = (
         (STATIC_ROUTE, {"GET": "_get_static"}),
         (MEDIA_ROUTE, {"GET": "_get_media"}),
+        (GUIDE_ROUTE, {"GET": "_get_guide"}),
         (OBSERVATION_ROUTE, {"DELETE": "_delete_observation"}),
     )
 
@@ -1102,6 +1106,25 @@ class _Handler(BaseHTTPRequestHandler):
         store = self.server.app.store
         root = (store.frames_dir if folder == MEDIA_FOLDERS[0] else store.crops_dir).resolve()
         target = self._safe_path(root, name)
+        self._send_file(target, CONTENT_TYPES.get(extension_of(name), BINARY_TYPE), None, False, NO_CACHE)
+
+    def _get_guide(self, rest: str, query: Dict[str, List[str]]) -> None:
+        """Serve the species reference: guide.json, or a photo as <CODE>/<file>.
+
+        The files live in ``<data>/guide/``, written by tools/fetch_guide_images.py.
+        A missing guide answers 404 with a message that names the script.
+        """
+        root = (self.server.app.data_dir / GUIDE_FOLDER).resolve()
+        if not root.is_dir():
+            raise HttpError(HTTP_NOT_FOUND, "guide: no reference photos yet; run tools/fetch_guide_images.py")
+        if rest == GUIDE_MANIFEST:
+            target = self._safe_path(root, GUIDE_MANIFEST)
+            self._send_file(target, CONTENT_TYPES["json"], None, False, NO_CACHE)
+            return
+        code, slash, name = rest.partition("/")
+        if not slash or not MEDIA_NAME.fullmatch(code) or not MEDIA_NAME.fullmatch(name):
+            raise HttpError(HTTP_BAD_REQUEST, f"path: {rest!r} must be guide.json or <CODE>/<file>")
+        target = self._safe_path(root, f"{code}/{name}")
         self._send_file(target, CONTENT_TYPES.get(extension_of(name), BINARY_TYPE), None, False, NO_CACHE)
 
     def _get_health(self, rest: str, query: Dict[str, List[str]]) -> None:

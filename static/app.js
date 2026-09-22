@@ -174,6 +174,13 @@ const dom = {
   helpToggle: byId('help-toggle'),
   help: byId('help'),
   helpClose: byId('help-close'),
+  guideToggle: byId('guide-toggle'),
+  guide: byId('guide'),
+  guideClose: byId('guide-close'),
+  guideSpecies: byId('guide-species'),
+  guideCount: byId('guide-count'),
+  guideText: byId('guide-text'),
+  guideImages: byId('guide-images'),
   staleBadge: byId('stale-badge'),
   breadcrumb: byId('breadcrumb'),
   search: byId('search'),
@@ -868,6 +875,7 @@ function chooseSpecies(code) {
   }
   state.pending.species = code;
   state.pending.error = null;
+  showGuide(code, false);
   clearFilter();
   if (document.activeElement === dom.filter) {
     dom.filter.blur();
@@ -2306,6 +2314,148 @@ async function exportPackage() {
  * Open or close the shortcuts card.
  * @param {boolean} [open] True opens, false closes, and no value flips the card.
  */
+/** The species guide: reference photos and the ID guide text, served from /guide/. */
+const guide = { data: null, code: null, error: '', loading: null };
+
+/**
+ * Load guide.json once. A missing guide leaves a message instead of photos.
+ * @returns {Promise<void>} Settles when the guide is loaded or the error is known.
+ */
+function loadGuide() {
+  if (guide.data || guide.loading) {
+    return guide.loading || Promise.resolve();
+  }
+  guide.loading = request('GET', '/guide/guide.json')
+    .then((data) => {
+      guide.data = Array.isArray(data.species) ? data.species : [];
+      guide.error = '';
+      fillGuideSelect();
+    })
+    .catch((error) => {
+      guide.error = endSentence(error.message);
+    })
+    .then(() => {
+      guide.loading = null;
+      renderGuide();
+    });
+  return guide.loading;
+}
+
+/** Fill the species picker in the guide from the loaded manifest. */
+function fillGuideSelect() {
+  dom.guideSpecies.textContent = '';
+  for (const item of guide.data) {
+    const label = `${item.code}  ${item.name}${item.images.length ? '' : '  (no photos)'}`;
+    dom.guideSpecies.append(el('option', { text: label, attrs: { value: item.code } }));
+  }
+}
+
+/**
+ * Show a species in the guide.
+ * @param {string} code The species code.
+ * @param {boolean} [open=true] Open the guide when it is closed.
+ */
+function showGuide(code, open = true) {
+  guide.code = code;
+  if (open) {
+    toggleGuide(true);
+  } else if (!dom.guide.hidden) {
+    renderGuide();
+  }
+}
+
+/**
+ * Open or close the guide.
+ * @param {boolean} [open] The wanted state; omitted means toggle.
+ */
+function toggleGuide(open) {
+  const show = open === undefined ? dom.guide.hidden : open;
+  dom.guide.hidden = !show;
+  dom.guideToggle.setAttribute('aria-expanded', show ? 'true' : 'false');
+  if (show) {
+    if (!guide.code) {
+      const pending = state.pending && state.pending.species;
+      guide.code = pending || state.pins[PIN_KEYS[0]] || (state.species[0] && state.species[0].code) || null;
+    }
+    loadGuide();
+    renderGuide();
+  }
+}
+
+/** Draw the guide for the chosen species. */
+function renderGuide() {
+  if (dom.guide.hidden) {
+    return;
+  }
+  dom.guideImages.textContent = '';
+  if (guide.error) {
+    dom.guideText.textContent = '';
+    dom.guideCount.textContent = '';
+    dom.guideImages.append(el('p', { class: 'guide-empty', text: `The guide did not load. ${guide.error} Run tools/fetch_guide_images.py, then reopen the guide.` }));
+    return;
+  }
+  if (!guide.data) {
+    dom.guideText.textContent = 'Loading the guide.';
+    return;
+  }
+  const item = guide.data.find((entry) => entry.code === guide.code) || guide.data[0];
+  if (!item) {
+    dom.guideText.textContent = 'The guide holds no species.';
+    return;
+  }
+  guide.code = item.code;
+  dom.guideSpecies.value = item.code;
+  dom.guideText.textContent = item.description || 'No description in the ID guide yet.';
+  dom.guideCount.textContent = item.images.length ? `${item.images.length} photos` : 'no photos';
+  if (!item.images.length) {
+    dom.guideImages.append(el('p', { class: 'guide-empty', text: `No reference photos for ${item.name} in the species viewer.` }));
+    return;
+  }
+  for (const file of item.images) {
+    const src = `/guide/${encodeURIComponent(item.code)}/${encodeURIComponent(file)}`;
+    const img = el('img', { attrs: { src, alt: item.name, loading: 'lazy' } });
+    // A div, not a button: Chrome gives a button no height from an image
+    // child inside a grid, so the tiles would stack over each other.
+    const tile = el('div', {
+      class: 'guide-image',
+      attrs: { role: 'button', tabindex: '0' },
+      title: `You enlarge this photo of ${item.name}. Click the large photo or press Escape to shrink it.`,
+    }, [img]);
+    tile.addEventListener('click', () => enlargeGuideImage(src, item.name));
+    tile.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        enlargeGuideImage(src, item.name);
+      }
+    });
+    dom.guideImages.append(tile);
+  }
+}
+
+/**
+ * Show one guide photo at full size over the page.
+ * @param {string} src The photo URL.
+ * @param {string} name The species name, used as the alt text.
+ */
+function enlargeGuideImage(src, name) {
+  closeGuideLarge();
+  const large = el('div', { class: 'guide-large', attrs: { id: 'guide-large', role: 'dialog', 'aria-label': name } }, [
+    el('img', { attrs: { src, alt: name } }),
+  ]);
+  large.addEventListener('click', closeGuideLarge);
+  document.body.append(large);
+}
+
+/** Remove the enlarged guide photo, if one is showing. */
+function closeGuideLarge() {
+  const large = document.getElementById('guide-large');
+  if (large) {
+    large.remove();
+    return true;
+  }
+  return false;
+}
+
 function toggleHelp(open) {
   const show = open === undefined ? dom.help.hidden : open;
   dom.help.hidden = !show;
@@ -2333,6 +2483,15 @@ function onKeyDown(event) {
     return;
   }
   const key = keyFromEvent(event.key, event.code, event.shiftKey);
+  if (key === 'Escape' && closeGuideLarge()) {
+    event.preventDefault();
+    return;
+  }
+  if (key === 'Escape' && !dom.guide.hidden) {
+    toggleGuide(false);
+    event.preventDefault();
+    return;
+  }
   if (key === 'Escape' && !dom.help.hidden) {
     toggleHelp(false);
     event.preventDefault();
@@ -2527,7 +2686,7 @@ function onScreeningKey(event, key) {
   }
   const letter = key.length === 1 ? key.toLowerCase() : '';
   if (event.repeat) {
-    return letter === 'g' || letter === 'z' || letter === 'd' || letter === 'n';
+    return letter === 'g' || letter === 'z' || letter === 'd' || letter === 'n' || letter === 'i';
   }
   if (letter === 'g') {
     setGrid(!state.grid);
@@ -2543,6 +2702,10 @@ function onScreeningKey(event, key) {
   }
   if (letter === 'n') {
     openNextVideo();
+    return true;
+  }
+  if (letter === 'i') {
+    toggleGuide();
     return true;
   }
   return false;
@@ -2644,6 +2807,9 @@ function wireEvents() {
   dom.exportButton.addEventListener('click', exportPackage);
   dom.helpToggle.addEventListener('click', () => toggleHelp());
   dom.helpClose.addEventListener('click', () => toggleHelp(false));
+  dom.guideToggle.addEventListener('click', () => toggleGuide());
+  dom.guideClose.addEventListener('click', () => toggleGuide(false));
+  dom.guideSpecies.addEventListener('change', () => showGuide(dom.guideSpecies.value));
 }
 
 /**

@@ -40,6 +40,8 @@
       </label>
       <button id="export" type="button" class="button"
               title="You export the ground-truth package. The server copies both tables and every frame and crop into a dated folder inside the OnDeck Drive folder.">Export</button>
+      <button id="guide-toggle" type="button" class="button" aria-expanded="false" aria-controls="guide"
+              title="You open the species guide: reference photos and the ID guide description for a species. The I key opens and closes it too.">Guide</button>
       <button id="help-toggle" type="button" class="button button-icon" aria-label="Keyboard shortcuts" aria-expanded="false" aria-controls="help"
               title="You open the list of keyboard shortcuts. The ? key opens and closes it too.">?</button>
     </div>
@@ -201,6 +203,24 @@
   </main>
 
   <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+
+  <div id="guide" class="guide" role="dialog" aria-label="Species guide" hidden>
+    <div class="guide-head">
+      <h2 class="panel-title">Species guide</h2>
+      <label class="guide-pick">
+        <span class="visually-hidden">Species</span>
+        <select id="guide-species" class="input"
+                title="You pick the species to look at. A number key or a chosen species in the mark bar moves this too."></select>
+      </label>
+      <span id="guide-count" class="guide-count"></span>
+      <button id="guide-close" type="button" class="button button-icon" aria-label="Close the species guide"
+              title="You close the guide. The Escape key and the I key do the same.">
+        <svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg>
+      </button>
+    </div>
+    <p id="guide-text" class="guide-text"></p>
+    <div id="guide-images" class="guide-images"></div>
+  </div>
 
   <div id="help" class="help" role="dialog" aria-label="Keyboard shortcuts" hidden>
     <div class="help-head">
