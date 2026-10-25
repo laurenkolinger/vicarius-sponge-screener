@@ -515,6 +515,16 @@ const KEY_OF_CODE = Object.freeze({
 });
 
 /**
+ * Read the digit of a number-row or number-pad key code.
+ * @param {string} code The event's `code` value, such as "Digit1" or "Numpad7".
+ * @returns {?string} "0" to "9", or null for any other code.
+ */
+export function digitFromCode(code) {
+  const match = /^(?:Digit|Numpad)(\d)$/.exec(typeof code === 'string' ? code : '');
+  return match ? match[1] : null;
+}
+
+/**
  * Read the key of a keyboard event, falling back to the physical key code. Real typing
  * always fills `key`. Test drivers that send raw key events sometimes fill `code` only.
  * @param {string} key The event's `key` value.
@@ -527,9 +537,9 @@ export function keyFromEvent(key, code, shift) {
     return key;
   }
   const name = typeof code === 'string' ? code : '';
-  const digit = /^(?:Digit|Numpad)(\d)$/.exec(name);
+  const digit = digitFromCode(name);
   if (digit) {
-    return shift ? '' : digit[1];
+    return shift ? '' : digit;
   }
   const letter = /^Key([A-Z])$/.exec(name);
   if (letter) {
@@ -545,15 +555,18 @@ export function keyFromEvent(key, code, shift) {
  * Read a pinned-species key from a keyboard event.
  * @param {string} key The event's `key` value.
  * @param {string} code The event's `code` value.
+ * @param {boolean} [shift=false] True when Shift is down. Shift turns the number row into
+ *   symbols ("!" for 1), so the physical key code decides then; Shift with a pick keeps the
+ *   video paused.
  * @returns {?string} "1" to "9" or "0" for the number row and the number pad, else null.
  */
-export function pinKeyFromEvent(key, code) {
+export function pinKeyFromEvent(key, code, shift = false) {
   if (typeof key === 'string' && PIN_KEYS.includes(key)) {
     return key;
   }
-  const match = /^Numpad(\d)$/.exec(String(code));
-  if (match && typeof key === 'string' && key === match[1]) {
-    return match[1];
+  const digit = digitFromCode(code);
+  if (digit && (shift || key === digit)) {
+    return digit;
   }
   return null;
 }
@@ -809,13 +822,24 @@ export function sortRowsByTime(rows) {
 }
 
 /**
+ * Tell the label status of an observation row.
+ * @param {?Object<string, string>} row An observation row from the server.
+ * @returns {string} "unlabeled" for a Later point (LabelStatus unlabeled), "labeled"
+ *   otherwise. Rows written before the LabelStatus column existed read as labeled.
+ */
+export function labelStatus(row) {
+  return row && row.LabelStatus === 'unlabeled' ? 'unlabeled' : 'labeled';
+}
+
+/**
  * Collect the saved marks near a video time, so the overlay can show what is
  * already logged in the frame on screen.
  * @param {Array<Object<string, string>>} rows Observation rows of one video.
  * @param {number} time The video time in seconds.
  * @param {number} windowSeconds How far from `time` a sighting may sit.
- * @returns {Array<{id: string, code: string, point: {x: number, y: number}, box: ?{x: number, y: number, w: number, h: number}}>}
- *   The marks inside the window. Rows with unreadable numbers are left out.
+ * @returns {Array<{id: string, code: string, status: string, point: {x: number, y: number}, box: ?{x: number, y: number, w: number, h: number}}>}
+ *   The marks inside the window. status is "unlabeled" for a Later point (LabelStatus
+ *   unlabeled) and "labeled" otherwise. Rows with unreadable numbers are left out.
  */
 export function marksNear(rows, time, windowSeconds) {
   if (!isFiniteNumber(time)) {
@@ -837,11 +861,137 @@ export function marksNear(rows, time, windowSeconds) {
     marks.push({
       id: row.ID,
       code: row.SpeciesCode,
+      status: labelStatus(row),
       point,
       box: hasBox ? { x: numbers[0], y: numbers[1], w: numbers[2], h: numbers[3] } : null,
     });
   }
   return marks;
+}
+
+/**
+ * Decide whether a flash label stays in the list and how the overlay draws it. A flash is
+ * the label that stays at a mark for a moment after a pick, while the video plays on.
+ * @param {{time: number, until: number, failed: boolean, pending: boolean}} flash The flash:
+ *   the video time of the pick, the clock time its label ends, whether its save failed,
+ *   and whether its save is still unsettled.
+ * @param {number} now The clock time in milliseconds (performance.now()).
+ * @param {number} playhead The video time on screen in seconds.
+ * @param {number} windowSeconds How close the playhead must be to show a failed save.
+ * @param {number} fadeMs The label fades out over this many final milliseconds.
+ * @returns {{keep: boolean, draw: boolean, alpha: number}} keep is true while the label
+ *   shows, while the save is unsettled (so a late failure can still show it), and after a
+ *   failure; draw is true while the label shows, and for a failed save whenever the
+ *   playhead is near its time; alpha is 1 for a failed save and fades a live label.
+ */
+export function flashView(flash, now, playhead, windowSeconds, fadeMs) {
+  const live = flash.until > now;
+  if (flash.failed) {
+    const near = live || Math.abs(flash.time - playhead) <= windowSeconds;
+    return { keep: true, draw: near, alpha: near ? 1 : 0 };
+  }
+  if (live) {
+    return { keep: true, draw: true, alpha: Math.min(1, (flash.until - now) / fadeMs) };
+  }
+  return { keep: Boolean(flash.pending), draw: false, alpha: 0 };
+}
+
+/**
+ * Word the error toast of the picks whose save failed.
+ * @param {Array<{code: ?string, name: string, time: number}>} items The unsaved picks: the
+ *   species code (null for a Later point), its scientific name, and the video time.
+ * @returns {string} "" for none; the species and the time for one, such as
+ *   "ACAU Aplysina cauliformis at 01:36 not saved."; the count for several, such as
+ *   "2 sightings not saved."
+ */
+export function unsavedSummary(items) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return '';
+  }
+  if (items.length > 1) {
+    return `${items.length} sightings not saved.`;
+  }
+  const [item] = items;
+  const clock = formatClock(item.time);
+  if (!item.code) {
+    return `The Later point at ${clock} not saved.`;
+  }
+  return `${`${item.code} ${item.name || ''}`.trim()} at ${clock} not saved.`;
+}
+
+/**
+ * Tell whether leaving the page now would lose sightings.
+ * @param {number} inFlight Saves the page has started and the server has not answered.
+ * @param {number} unsaved Saves that failed and wait for Retry.
+ * @returns {boolean} True when either count is above zero, so the page asks before it closes.
+ * @throws {TypeError} When a count is not an integer of 0 or more.
+ */
+export function leaveBlocked(inFlight, unsaved) {
+  for (const [name, value] of [['inFlight', inFlight], ['unsaved', unsaved]]) {
+    if (!Number.isInteger(value) || value < 0) {
+      throw new TypeError(`leaveBlocked: ${name} must be an integer of at least 0, got ${JSON.stringify(value)}`);
+    }
+  }
+  return inFlight + unsaved > 0;
+}
+
+/**
+ * Word the sightings count of one video, the way the video browser words it.
+ * @param {Array<?Object<string, string>>} rows The rows of the video.
+ * @returns {string} The labeled count, plus " · N later" when the video holds Later points.
+ */
+export function sightingsCount(rows) {
+  const later = rows.filter((row) => labelStatus(row) === 'unlabeled').length;
+  const labeled = rows.length - later;
+  return later > 0 ? `${labeled} · ${later} later` : String(labeled);
+}
+
+/**
+ * Word the toast of a finished export.
+ * @param {{observations: number, path: string, unlabeled_left_out: ?number}} answer The
+ *   answer of POST /api/export.
+ * @returns {string} How many sightings the package holds, how many Later points it left
+ *   out when there are any, and the folder last in a sentence of its own, with no period
+ *   after the path so it can be copied whole.
+ */
+export function exportSummary(answer) {
+  const count = Number(answer.observations) || 0;
+  const left = Number(answer.unlabeled_left_out) || 0;
+  const parts = [`Exported ${count} ${count === 1 ? 'sighting' : 'sightings'}.`];
+  if (left > 0) {
+    parts.push(`${left} Later ${left === 1 ? 'point' : 'points'} left out.`);
+  }
+  parts.push(`Folder: ${answer.path}`);
+  return parts.join(' ');
+}
+
+/**
+ * Find the most recent unsaved pick of one video, the one Z discards.
+ * @param {Array<{key: string, order: number}>} saves The unsaved picks; order counts up with
+ *   every pick.
+ * @param {?string} key The S3 key of the video.
+ * @returns {?{key: string, order: number}} The pick with the highest order for that video,
+ *   or null when the video has none.
+ */
+export function latestUnsaved(saves, key) {
+  let latest = null;
+  for (const save of saves) {
+    if (save.key === key && (latest === null || save.order > latest.order)) {
+      latest = save;
+    }
+  }
+  return latest;
+}
+
+/**
+ * Word the toast of an unsaved pick that Z discarded.
+ * @param {?string} code The species code, or null for a Later point.
+ * @param {number} time The video time of the pick in seconds.
+ * @returns {string} Such as "Discarded the unsaved ACAU pick at 01:36".
+ */
+export function discardedText(code, time) {
+  const what = code ? `${code} pick` : 'Later point';
+  return `Discarded the unsaved ${what} at ${formatClock(time)}`;
 }
 
 /**

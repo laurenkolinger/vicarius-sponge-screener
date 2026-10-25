@@ -26,11 +26,26 @@ SPECIES_CSV = PROJECT / "config" / "species.csv"
 GUIDE_DIR = PROJECT / "data" / "guide"
 GUIDE_JSON = GUIDE_DIR / "guide.json"
 
-# Names in the viewer that differ from the names in the ID guide.
+# Names in the viewer that differ from the names in the ID guide. Every listed name
+# that the viewer holds contributes its photos, so a species split into morphotypes
+# or formas in the viewer gets the photos of all of them.
 NAME_ALIASES = {
     "Neopetrosia proxima": ["Xestospongia proxima", "Neopetrosia proxima"],
     "Cliona delitrix": ["Cliona delitrix"],
     "Siphonodictyon xamaycaense": ["Siphonodictyon xamaycaense", "Aka xamaycaense"],
+    "Aplysina cauliformis": [
+        "Aplysina cauliformis",
+        "Aplysina cauliformis lilac creeping morphotype",
+        "Aplysina cauliformis brown erect morphotype",
+        "Aplysina cauliformis a",
+        "Aplysina cauliformis b",
+    ],
+    "Chondrilla caribensis": [
+        "Chondrilla caribensis",
+        "Chondrilla caribensis forma caribensis",
+        "Chondrilla caribensis forma hermatypica",
+    ],
+    "Oceanapia bartschi": ["Oceanapia bartschi", "Coelocarteria bartschi"],
 }
 
 
@@ -64,20 +79,30 @@ def load_manifest() -> dict:
 
 
 def find_entry(name: str, by_name: dict) -> dict:
-    """Find the manifest entry for a scientific name, trying known aliases.
+    """Find the manifest entries for a scientific name and merge them into one.
 
     Args:
         name: The scientific name from species.csv.
         by_name: Manifest entries keyed by lower-case name.
 
     Returns:
-        The entry, or an empty dict when no name matches.
+        One entry with the photos of every matching alias in alias order (each photo
+        once), the sources and viewer names joined with "; ", or an empty dict when
+        no name matches.
     """
+    matches = []
     for candidate in NAME_ALIASES.get(name, [name]):
         entry = by_name.get(candidate.strip().lower())
-        if entry:
-            return entry
-    return {}
+        if entry and entry not in matches:
+            matches.append(entry)
+    if not matches:
+        return {}
+    images = list(dict.fromkeys(image for entry in matches for image in entry.get("images", [])))
+    return {
+        "name": "; ".join(entry["name"] for entry in matches),
+        "source": "; ".join(dict.fromkeys(entry.get("source", "") for entry in matches if entry.get("source"))),
+        "images": images,
+    }
 
 
 def main(argv) -> int:

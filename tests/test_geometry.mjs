@@ -481,6 +481,25 @@ test('pinKeyFromEvent reads the number row and the number pad', () => {
   assert.equal(g.pinKeyFromEvent(undefined, undefined), null);
 });
 
+test('digitFromCode reads the digit of a number-row or number-pad key code', () => {
+  assert.equal(g.digitFromCode('Digit1'), '1');
+  assert.equal(g.digitFromCode('Digit0'), '0');
+  assert.equal(g.digitFromCode('Numpad7'), '7');
+  assert.equal(g.digitFromCode('KeyA'), null);
+  assert.equal(g.digitFromCode('NumpadEnter'), null);
+  assert.equal(g.digitFromCode(''), null);
+  assert.equal(g.digitFromCode(undefined), null);
+});
+
+test('pinKeyFromEvent reads a shifted digit by its key code when Shift is down', () => {
+  assert.equal(g.pinKeyFromEvent('!', 'Digit1', true), '1', 'Shift+1 keeps the video paused after the pick');
+  assert.equal(g.pinKeyFromEvent(')', 'Digit0', true), '0');
+  assert.equal(g.pinKeyFromEvent('End', 'Numpad1', true), '1');
+  assert.equal(g.pinKeyFromEvent('2', 'Digit2', true), '2');
+  assert.equal(g.pinKeyFromEvent('!', 'Digit1', false), null);
+  assert.equal(g.pinKeyFromEvent('A', 'KeyA', true), null);
+});
+
 test('keyFromEvent keeps a real key value and falls back to the physical key code', () => {
   assert.equal(g.keyFromEvent('1', 'Digit1', false), '1');
   assert.equal(g.keyFromEvent('Enter', 'Enter', true), 'Enter');
@@ -687,11 +706,97 @@ test('marksNear returns the saved marks within the time window', () => {
   ];
   const marks = g.marksNear(rows, 10.2, 0.5);
   assert.deepEqual(marks, [
-    { id: 'ID001', code: 'ACAU', point: { x: 0.25, y: 0.75 }, box: null },
-    { id: 'ID002', code: 'CDEL', point: { x: 0.5, y: 0.5 }, box: { x: 0.4, y: 0.4, w: 0.2, h: 0.2 } },
+    { id: 'ID001', code: 'ACAU', status: 'labeled', point: { x: 0.25, y: 0.75 }, box: null },
+    {
+      id: 'ID002', code: 'CDEL', status: 'labeled', point: { x: 0.5, y: 0.5 }, box: { x: 0.4, y: 0.4, w: 0.2, h: 0.2 },
+    },
   ]);
   assert.deepEqual(g.marksNear(rows, NaN, 0.5), []);
   assert.deepEqual(g.marksNear([], 10, 0.5), []);
+});
+
+test('marksNear passes the label status, so Later points draw apart from labeled ones', () => {
+  const rows = [
+    makeRow('ID001', '10.000', { LabelStatus: 'labeled' }),
+    makeRow('ID002', '10.100', { SpeciesCode: '', LabelStatus: 'unlabeled' }),
+    makeRow('ID003', '10.200'),
+  ];
+  assert.deepEqual(g.marksNear(rows, 10.1, 0.5).map((mark) => [mark.id, mark.code, mark.status]), [
+    ['ID001', 'ACAU', 'labeled'],
+    ['ID002', '', 'unlabeled'],
+    ['ID003', 'ACAU', 'labeled'],
+  ]);
+});
+
+test('labelStatus reads a Later point from LabelStatus and everything else as labeled', () => {
+  assert.equal(g.labelStatus({ LabelStatus: 'unlabeled' }), 'unlabeled');
+  assert.equal(g.labelStatus({ LabelStatus: 'labeled' }), 'labeled');
+  assert.equal(g.labelStatus({ SpeciesCode: 'ACAU' }), 'labeled', 'a row from before the LabelStatus column');
+  assert.equal(g.labelStatus({}), 'labeled');
+  assert.equal(g.labelStatus(null), 'labeled');
+});
+
+test('flashView fades a live flash over its last moments and keeps it while its save is unsettled', () => {
+  const flash = { time: 10, until: 2000, failed: false, pending: true };
+  assert.deepEqual(g.flashView(flash, 1000, 10.2, 0.6, 400), { keep: true, draw: true, alpha: 1 });
+  assert.deepEqual(g.flashView(flash, 1800, 10.2, 0.6, 400), { keep: true, draw: true, alpha: 0.5 });
+  assert.deepEqual(g.flashView(flash, 2500, 40, 0.6, 400), { keep: true, draw: false, alpha: 0 },
+    'a save still in flight after the flash faded keeps its flash, so a late failure can show it');
+  assert.deepEqual(g.flashView({ ...flash, pending: false }, 2500, 40, 0.6, 400), { keep: false, draw: false, alpha: 0 });
+});
+
+test('flashView shows a failed save as a solid tag near its time, however late the failure came', () => {
+  const failed = { time: 10, until: 2000, failed: true, pending: false };
+  assert.deepEqual(g.flashView(failed, 1000, 10, 0.6, 400), { keep: true, draw: true, alpha: 1 });
+  assert.deepEqual(g.flashView(failed, 60000, 10.5, 0.6, 400), { keep: true, draw: true, alpha: 1 });
+  assert.deepEqual(g.flashView(failed, 60000, 11, 0.6, 400), { keep: true, draw: false, alpha: 0 });
+});
+
+test('unsavedSummary names one unsaved pick and counts several', () => {
+  assert.equal(g.unsavedSummary([]), '');
+  assert.equal(g.unsavedSummary([{ code: 'ACAU', name: 'Aplysina cauliformis', time: 96.3 }]),
+    'ACAU Aplysina cauliformis at 01:36 not saved.');
+  assert.equal(g.unsavedSummary([{ code: null, name: '', time: 61 }]), 'The Later point at 01:01 not saved.');
+  assert.equal(g.unsavedSummary([{ code: 'ZZZZ', name: '', time: 5 }]), 'ZZZZ at 00:05 not saved.');
+  assert.equal(g.unsavedSummary([{ code: 'ACAU', name: 'a', time: 1 }, { code: null, name: '', time: 2 }]),
+    '2 sightings not saved.');
+});
+
+test('leaveBlocked holds the page while a save is in flight or unsaved', () => {
+  assert.equal(g.leaveBlocked(0, 0), false);
+  assert.equal(g.leaveBlocked(1, 0), true);
+  assert.equal(g.leaveBlocked(0, 2), true);
+  assert.throws(() => g.leaveBlocked(-1, 0), (error) => error instanceof TypeError && error.message.includes('inFlight'));
+  assert.throws(() => g.leaveBlocked(0, '1'), (error) => error instanceof TypeError && error.message.includes('unsaved'));
+});
+
+test('sightingsCount counts labeled rows and names the Later points apart', () => {
+  assert.equal(g.sightingsCount([]), '0');
+  assert.equal(g.sightingsCount([{ LabelStatus: 'labeled' }, { SpeciesCode: 'ACAU' }]), '2');
+  assert.equal(g.sightingsCount([{ LabelStatus: 'labeled' }, { LabelStatus: 'unlabeled' }]), '1 · 1 later');
+  assert.equal(g.sightingsCount([{ LabelStatus: 'unlabeled' }, { LabelStatus: 'unlabeled' }]), '0 · 2 later');
+});
+
+test('exportSummary counts the package and gives the folder its own sentence, with no period on the path', () => {
+  assert.equal(g.exportSummary({ observations: 5, path: '/x/pkg', unlabeled_left_out: 0 }), 'Exported 5 sightings. Folder: /x/pkg');
+  assert.equal(g.exportSummary({ observations: 1, path: '/x/pkg', unlabeled_left_out: 1 }), 'Exported 1 sighting. 1 Later point left out. Folder: /x/pkg');
+  assert.equal(g.exportSummary({ observations: 3, path: '/x/pkg', unlabeled_left_out: 2 }), 'Exported 3 sightings. 2 Later points left out. Folder: /x/pkg');
+  assert.equal(g.exportSummary({ observations: 3, path: '/x/pkg' }), 'Exported 3 sightings. Folder: /x/pkg');
+});
+
+test('latestUnsaved finds the most recent unsaved pick of one video', () => {
+  const saves = [
+    { key: 'a', order: 1 }, { key: 'b', order: 2 }, { key: 'a', order: 4 }, { key: 'a', order: 3 },
+  ];
+  assert.equal(g.latestUnsaved(saves, 'a'), saves[2]);
+  assert.equal(g.latestUnsaved(saves, 'b'), saves[1]);
+  assert.equal(g.latestUnsaved(saves, 'c'), null);
+  assert.equal(g.latestUnsaved([], 'a'), null);
+});
+
+test('discardedText names the species and the time of a discarded pick', () => {
+  assert.equal(g.discardedText('ACAU', 96.3), 'Discarded the unsaved ACAU pick at 01:36');
+  assert.equal(g.discardedText(null, 61), 'Discarded the unsaved Later point at 01:01');
 });
 
 test('endSentence closes server text with a period so the next sentence reads cleanly', () => {

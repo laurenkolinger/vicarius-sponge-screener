@@ -2,13 +2,17 @@
  * Sponge Screener page logic.
  *
  * The page has two keyboard modes. In screening mode the keys drive the video. A
- * click or a drag on the picture pauses the video, starts a mark, and switches to
- * marking mode, where the number keys choose a pinned species, letters filter the
- * full list, Enter saves, and Escape cancels.
+ * click or a drag on the picture pauses the video, starts a mark, and opens the
+ * species wheel on it (marking mode). One pick saves the sighting and the video stays
+ * paused on that frame while the images upload (Shift with the pick plays on); the hub
+ * saves a Later point without a species. The server follows every sighting through its
+ * video, and a saved mark rides along its track on every frame the video shows. A click
+ * on a drawn mark, paused or playing, opens the same wheel to change that row's species.
  *
- * Every calculation lives in geometry.js, which has its own node tests. This file
- * wires those calculations to the DOM, the video element, and the HTTP contract of
- * screener/server.py. Server text reaches the DOM through textContent only.
+ * Every calculation lives in geometry.js, wheel.js, and track_math.js, which have their
+ * own node tests; wheel_view.js draws the wheel. This file wires those pieces to the DOM,
+ * the video element, and the HTTP contract of screener/server.py. Server text reaches the
+ * DOM through textContent only.
  */
 
 import {
@@ -21,17 +25,23 @@ import {
   breadcrumbs,
   clampTime,
   contentRect,
+  discardedText,
   cropRect,
   endSentence,
+  exportSummary,
   filterByName,
   filterSpecies,
   formatBytes,
   formatClock,
+  flashView,
   formatLabel,
   isDrag,
   isUsableBox,
   keyFromEvent,
+  labelStatus,
   lastSighting,
+  latestUnsaved,
+  leaveBlocked,
   marksNear,
   mergeTally,
   nextVideo,
@@ -42,6 +52,7 @@ import {
   quadrantRect,
   queueProgress,
   resumePosition,
+  sightingsCount,
   sortRowsByTime,
   splitVideoName,
   statusLabel,
@@ -52,40 +63,86 @@ import {
   toNormalized,
   toNormalizedClamped,
   toPixels,
+  unsavedSummary,
 } from './geometry.js';
+import {
+  WHEEL,
+  deleteKeyAction,
+  deleteKeyTiming,
+  placeWheel,
+  rowLabel,
+  seenCounts,
+  shortLabel,
+  spaceAction,
+  wheelScale,
+} from './wheel.js';
+import { createWheel } from './wheel_view.js';
+import { createScrubber } from './scrub.js';
+import { markAt, marksAt, readTrackAnswer } from './track_math.js';
 
 // ------------------------------------------------------------------ constants
 
 const ROOT_PREFIX = 'TCRMP_video_ondeck/';
 const MUTATION_HEADER = 'X-Screener';
 const JPEG_QUALITY = 0.95;
-const JUMP_SECONDS = 2;
 const FRAME_STEP_SECONDS = 1 / 30;
 const POLL_MS = 2000;
 const NETWORK_RETRY_MS = 3000;
 const POSITION_SAVE_MS = 1000;
+/** A saved mark without a track that covers the time on screen shows this close to its time. */
 const SAVED_MARK_WINDOW_SECONDS = 0.6;
+/** While a track of the open video is still being made, the page asks for the tracks this often. */
+const TRACK_POLL_MS = 3000;
 const TOAST_MS = 2600;
 const ERROR_TOAST_MS = 7000;
 const LONG_TOAST_MS = 12000;
 const MAX_TOASTS = 4;
 const DELETE_ARM_MS = 3000;
 const FRESH_ROW_MS = 1600;
+/** An open guide follows the lit wheel species after this pause, so a sweep across slices does not redraw it at every one. */
+const GUIDE_FOLLOW_MS = 120;
+/** Z waits for the saves in flight; after this long it says so. */
+const UNDO_NOTICE_MS = 300;
+/** Z stops waiting for a save that has not answered after this long, and does nothing. */
+const UNDO_WAIT_LIMIT_MS = 10000;
 const HAVE_CURRENT_DATA = 2;
+const DEFAULT_SPEED = 1.5;
 const MARK_COLOR = '#ff2bd6';
 const MARK_INK = '#1f0019';
+const LATER_COLOR = '#ffb020';
+const LATER_INK = '#2a1a00';
+const LATER_DASH = [5, 4];
+const FAILED_COLOR = '#e5484d';
+const FAILED_INK = '#ffffff';
 const QUADRANT_FILL = 'rgba(255, 255, 255, 0.12)';
 const CANVAS_FONT = '700 13px ui-monospace, "SF Mono", Menlo, monospace';
 const TAG_HEIGHT = 20;
 const TICK_REACH = 10;
+/** A click this close to a drawn saved mark, paused or playing, opens the wheel for that row. */
+/** A click this close to a mark's center edits it: the ring and its ticks reach 18 px, and the
+    rest leaves room for a click that comes a moment after a moving mark has moved on. */
+const EDIT_REACH_PX = 26;
+/** The wheel keeps this much room between its outer ring and the edge of the view. */
+const WHEEL_MARGIN_PX = 12;
+/** A flash label stays on the picture this long after a pick, fading over the last part. */
+const FLASH_MS = 1500;
+const FLASH_FADE_MS = 400;
+const FLASH_NAME_CHARS = 12;
+const FLASH_RING = { width: 2, radius: 9 };
+/** File extensions Chrome plays directly, for a video opened from the To label list. */
+const PLAYABLE_EXTENSIONS = Object.freeze(['mp4', 'm4v', 'mov']);
+/** Elements a mousedown may reach while the wheel is open without cancelling the mark. */
+const MARKING_ZONES = '#wheel, #overlay, #pins, .combo, #note, #cancel, #fullscreen, #help, #guide, #guide-large, #toasts';
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const STORAGE = {
   position: 'screener.position.',
   prefix: 'screener.prefix',
   grid: 'screener.grid',
-  speed: 'screener.speed',
+  deck: 'screener.deck',
+  guideDock: 'screener.guideDock',
+  speed: 'screener.speed.v2',
 };
-const IDLE_TEXT = 'Pick a video from the list on the left. Then click a sponge, press its number key, and press Enter.';
+const IDLE_TEXT = 'Pick a video from the list on the left. Then click a sponge and pick its species in the wheel.';
 
 // ---------------------------------------------------------------------- state
 
@@ -101,14 +158,18 @@ const state = {
   source: null,
   videoStatus: 'new',
   pending: null,
-  saving: false,
   rows: [],
+  tracks: {},
+  trackPending: [],
+  toLabel: [],
+  toLabelError: null,
   species: [],
   pins: {},
   annotator: '',
   tallyTarget: 3,
   tally: [],
   tallyTotal: 0,
+  tallyUnlabeled: 0,
   tallyError: null,
   speciesError: null,
   prefix: ROOT_PREFIX,
@@ -125,7 +186,10 @@ const state = {
   matchIndex: 0,
   pinCandidate: null,
   grid: true,
-  speed: 1,
+  deckShown: false,
+  guideDocked: true,
+  speed: DEFAULT_SPEED,
+  fullscreen: false,
   conversion: null,
   queue: {},
   status: { kind: 'idle', text: IDLE_TEXT },
@@ -135,6 +199,9 @@ const state = {
 /** Timers, the live drag, and other values that are not plain page data. */
 const runtime = {
   loadToken: 0,
+  queryEditedAt: -Infinity,
+  deleteArmedAt: null,
+  guideFollowTimer: null,
   drag: null,
   convertTimer: null,
   retryTimer: null,
@@ -149,6 +216,24 @@ const runtime = {
   statusAction: null,
   failedPrefix: ROOT_PREFIX,
   failedRefresh: false,
+  flashes: [],
+  flashFrame: 0,
+  unsaved: [],
+  unsavedToast: null,
+  inFlight: new Set(),
+  settleWaiters: [],
+  undoing: false,
+  pickCount: 0,
+  jump: null,
+  toLabelToken: 0,
+  tallyToken: 0,
+  trackTimer: null,
+  trackRequest: 0,
+  frameCallback: 0,
+  /** The media time of the frame on screen, from requestVideoFrameCallback; null during a seek. */
+  presentedTime: null,
+  /** The saved marks as last drawn, with their centers in stage pixels, for hit testing. */
+  drawn: { time: NaN, marks: [] },
 };
 
 // ------------------------------------------------------------------------ DOM
@@ -177,6 +262,7 @@ const dom = {
   guideToggle: byId('guide-toggle'),
   guide: byId('guide'),
   guideClose: byId('guide-close'),
+  guideDock: byId('guide-dock'),
   guideSpecies: byId('guide-species'),
   guideCount: byId('guide-count'),
   guideText: byId('guide-text'),
@@ -191,6 +277,8 @@ const dom = {
   folders: byId('folders'),
   videos: byId('videos'),
   browserEmpty: byId('browser-empty'),
+  theater: byId('theater'),
+  wheelLayer: byId('wheel-layer'),
   stage: byId('stage'),
   video: byId('video'),
   overlay: byId('overlay'),
@@ -206,9 +294,12 @@ const dom = {
   faster: byId('faster'),
   speed: byId('speed'),
   grid: byId('grid'),
+  deckToggle: byId('deck-toggle'),
   done: byId('done'),
   doneLabel: byId('done-label'),
   next: byId('next'),
+  fullscreen: byId('fullscreen'),
+  fullscreenIcon: byId('fullscreen-icon'),
   speciesError: byId('species-error'),
   speciesErrorText: byId('species-error-text'),
   speciesRetry: byId('species-retry'),
@@ -219,12 +310,13 @@ const dom = {
   filter: byId('filter'),
   matches: byId('matches'),
   note: byId('note'),
-  save: byId('save'),
-  saveStay: byId('save-stay'),
   cancel: byId('cancel'),
   sightings: byId('sightings'),
   sightingsCount: byId('sightings-count'),
   sightingsEmpty: byId('sightings-empty'),
+  toLabel: byId('to-label'),
+  toLabelCount: byId('to-label-count'),
+  toLabelEmpty: byId('to-label-empty'),
   tallyTarget: byId('tally-target'),
   tallyRows: byId('tally-rows'),
   tallyEmpty: byId('tally-empty'),
@@ -380,23 +472,43 @@ async function request(method, path, body) {
  * Show a short message above the video.
  * @param {string} message The text to show.
  * @param {string} [kind="ok"] "ok", "info", or "error".
- * @param {number} [duration] Milliseconds on screen. Errors stay longer by default.
+ * @param {number} [duration] Milliseconds on screen. Errors stay longer by default, and
+ *   Infinity keeps the toast until the code removes it.
+ * @param {?{label: string, title: string, run: Function}} [action] A button inside the toast.
+ * @returns {HTMLElement} The toast, so a caller can change or remove it later.
  */
-function toast(message, kind = 'ok', duration) {
+function toast(message, kind = 'ok', duration, action = null) {
   const text = String(message);
   for (const old of Array.from(dom.toasts.children)) {
-    if (old.textContent === text) {
+    if (old.dataset.text === text && old.dataset.sticky !== 'true') {
       old.remove();
     }
   }
-  while (dom.toasts.children.length >= MAX_TOASTS) {
-    dom.toasts.firstElementChild.remove();
+  const removable = () => Array.from(dom.toasts.children).find((node) => node.dataset.sticky !== 'true');
+  while (dom.toasts.children.length >= MAX_TOASTS && removable()) {
+    removable().remove();
   }
-  const node = el('div', { class: 'toast', text, data: { kind } });
+  const life = duration || (kind === 'error' ? ERROR_TOAST_MS : TOAST_MS);
+  const node = el('div', {
+    class: 'toast',
+    data: { kind, text, sticky: String(life === Infinity) },
+  }, [el('span', { class: 'toast-text', text })]);
+  if (action) {
+    const button = el('button', {
+      class: 'button toast-action',
+      text: action.label,
+      title: action.title,
+      attrs: { type: 'button' },
+    });
+    button.addEventListener('click', action.run);
+    node.append(button);
+  }
   dom.toasts.append(node);
   state.lastToast = { message: text, kind };
-  const life = duration || (kind === 'error' ? ERROR_TOAST_MS : TOAST_MS);
-  window.setTimeout(() => node.remove(), life);
+  if (life !== Infinity) {
+    window.setTimeout(() => node.remove(), life);
+  }
+  return node;
 }
 
 // -------------------------------------------------------------- browser panel
@@ -556,6 +668,7 @@ function videoNode(video) {
 
   const format = formatLabel(Boolean(video.playable), video.converted);
   const status = video.status === 'in progress' || video.status === 'done' ? video.status : 'new';
+  const later = Number(video.unlabeled) || 0;
   const meta = el('span', { class: 'video-meta' }, [
     el('span', {
       class: 'badge',
@@ -563,6 +676,11 @@ function videoNode(video) {
       title: 'new: nobody has opened this video. in progress: it was opened, and the number counts its sightings. done: you marked it fully screened.',
       data: { status },
     }),
+    later > 0 ? el('span', {
+      class: 'video-later',
+      text: `· ${later} later`,
+      title: 'Points in this video that you saved for later. You give each one a species from the To label list.',
+    }) : '',
     el('span', {
       class: 'format',
       text: format.text,
@@ -793,7 +911,6 @@ function applySettings(data) {
 
 /** Draw the ten pinned-species keycaps. */
 function renderPins() {
-  const chosen = state.pending ? state.pending.species : null;
   const nodes = PIN_KEYS.map((slot) => {
     const code = state.pins[slot] || '';
     const species = speciesByCode(code);
@@ -805,7 +922,7 @@ function renderPins() {
     const choose = el('button', {
       class: 'pin-choose',
       title: code
-        ? `You choose ${name || code} for the mark on screen. The ${slot} key does the same.`
+        ? `You save the mark on screen as ${name || code} and the video stays paused. The ${slot} key does the same, and Shift plays on.`
         : `Key ${slot} has no species yet. You highlight a species in the filter list, then click the pin in this corner.`,
       attrs: {
         type: 'button',
@@ -826,7 +943,7 @@ function renderPins() {
     return el('div', {
       class: 'pin-slot',
       attrs: { role: 'group' },
-      data: { slot, code, chosen: String(Boolean(code) && code === chosen) },
+      data: { slot, code },
     }, [choose, assign]);
   });
   dom.pins.replaceChildren(...nodes);
@@ -844,15 +961,16 @@ function onPinsClick(event) {
   }
   const choose = event.target.closest('.pin-choose');
   if (choose) {
-    choosePinned(choose.dataset.slot);
+    choosePinned(choose.dataset.slot, event.shiftKey);
   }
 }
 
 /**
- * Choose the species pinned to a key for the mark on screen.
+ * Save the mark on screen as the species pinned to a key.
  * @param {string} slot The key, "1" to "9" or "0".
+ * @param {boolean} shift True when Shift was held, which plays on after the save.
  */
-function choosePinned(slot) {
+function choosePinned(slot, shift) {
   if (state.mode !== 'marking') {
     toast('Click a sponge in the video first. Then press its species key.', 'info');
     return;
@@ -862,27 +980,7 @@ function choosePinned(slot) {
     toast(`Slot ${slot} is empty.`, 'info');
     return;
   }
-  chooseSpecies(code);
-}
-
-/**
- * Set the species of the pending mark and return the keyboard to the mark.
- * @param {string} code The species code.
- */
-function chooseSpecies(code) {
-  if (!state.pending) {
-    return;
-  }
-  state.pending.species = code;
-  state.pending.error = null;
-  showGuide(code, false);
-  clearFilter();
-  if (document.activeElement === dom.filter) {
-    dom.filter.blur();
-  }
-  renderPins();
-  renderMarkBar();
-  drawOverlay();
+  pickSpecies(code, shift);
 }
 
 /**
@@ -993,7 +1091,7 @@ function renderMatches() {
     return el('li', {
       class: 'match',
       title: state.mode === 'marking'
-        ? `You choose ${species ? species.name : code} for the mark on screen.`
+        ? `You save the mark on screen as ${species ? species.name : code} and the video stays paused.`
         : `You hold ${species ? species.name : code} ready for pinning. Then you click the pin in the corner of a number key.`,
       attrs: { role: 'option', id: `match-${code}`, 'aria-selected': String(selected) },
       data: { code },
@@ -1027,19 +1125,8 @@ function clearFilter() {
 }
 
 /**
- * Move the keyboard to the filter box and type one letter there. Marking mode sends
- * letter keys here, so typing a name needs no click.
- * @param {string} letter The typed letter.
- */
-function typeIntoFilter(letter) {
-  dom.filter.focus();
-  dom.filter.value += letter;
-  state.matchIndex = 0;
-  updateMatches();
-}
-
-/**
- * React to a click on a filter match: highlight it, and in marking mode choose it.
+ * React to a click on a filter match: in marking mode save the mark as that species,
+ * otherwise hold it ready for pinning.
  * @param {MouseEvent} event The click.
  */
 function onMatchClick(event) {
@@ -1049,7 +1136,7 @@ function onMatchClick(event) {
   }
   state.matchIndex = Math.max(0, state.matches.indexOf(row.dataset.code));
   if (state.mode === 'marking') {
-    chooseSpecies(row.dataset.code);
+    pickSpecies(row.dataset.code, event.shiftKey);
   } else {
     armPin(row.dataset.code);
   }
@@ -1090,28 +1177,37 @@ function clearStatus(kinds) {
 function stopVideoTimers() {
   window.clearTimeout(runtime.convertTimer);
   window.clearTimeout(runtime.retryTimer);
+  window.clearTimeout(runtime.trackTimer);
   runtime.convertTimer = null;
   runtime.retryTimer = null;
+  runtime.trackTimer = null;
 }
 
 /**
- * Open a video: tell the server, load its sightings, and start playback, through
- * conversion when Chrome cannot play the format.
+ * Open a video: tell the server, load its sightings and their tracks, and start playback,
+ * through conversion when Chrome cannot play the format.
  * @param {object} entry A catalog video entry ({key, name, playable, converted, status}).
+ * @param {?{key: string, time: number, row: object}} [jump] A point to land on once the video
+ *   loads: the video seeks there instead of the remembered position, pauses, and opens the
+ *   wheel on the row. The To label list passes this.
  * @returns {Promise<void>} Settles after the open call and the sightings call returned.
  */
-async function openVideo(entry) {
+async function openVideo(entry, jump = null) {
+  scrubber.stop();
   if (state.pending) {
     endMark();
   }
   savePosition();
   stopVideoTimers();
+  runtime.jump = jump;
   runtime.loadToken += 1;
   runtime.playFailures = 0;
   const token = runtime.loadToken;
   state.key = entry.key;
   state.name = entry.name;
   state.rows = [];
+  state.tracks = {};
+  state.trackPending = [];
   state.conversion = null;
   state.videoStatus = entry.status === 'done' ? 'done' : 'in progress';
   dom.currentVideo.textContent = entry.name;
@@ -1128,6 +1224,7 @@ async function openVideo(entry) {
   } else {
     startConversion(token, 'Chrome cannot play this format directly.');
   }
+  loadTracks();
 
   const [opened, listed] = await Promise.allSettled([
     request('POST', '/api/videos/open', { key: entry.key }),
@@ -1366,10 +1463,20 @@ async function onVideoError() {
   }
 }
 
-/** Take over the length of a freshly loaded video and jump to the remembered position. */
+/**
+ * Take over the length of a freshly loaded video and jump to the remembered position, or
+ * to the point the To label list asked for, which takes precedence.
+ */
 function onLoadedMetadata() {
   dom.scrub.max = String(Number.isFinite(dom.video.duration) ? dom.video.duration : 0);
-  const start = resumePosition(storageGet(STORAGE.position + state.key), dom.video.duration);
+  const jump = runtime.jump && runtime.jump.key === state.key ? runtime.jump : null;
+  runtime.jump = null;
+  const start = jump
+    ? clampTime(jump.time, dom.video.duration)
+    : resumePosition(storageGet(STORAGE.position + state.key), dom.video.duration);
+  if (jump) {
+    dom.video.pause();
+  }
   if (start > 0) {
     dom.video.currentTime = start;
   }
@@ -1378,6 +1485,26 @@ function onLoadedMetadata() {
   renderScrubMarks();
   renderMarkBar();
   drawOverlay();
+  if (jump) {
+    landJump(jump);
+  }
+}
+
+/**
+ * Open the wheel on a row once the seek to its time has landed.
+ * @param {{key: string, time: number, row: object}} jump The point to land on.
+ * @returns {Promise<void>} Settles after the wheel opened, or at once when the video changed.
+ */
+async function landJump(jump) {
+  await waitForSeek();
+  if (state.key !== jump.key || !isVideoReady()) {
+    return;
+  }
+  if (state.pending) {
+    endMark();
+  }
+  dom.video.pause();
+  openEdit(jump.row);
 }
 
 /** Remember the position of the open video, so it reopens there. */
@@ -1463,6 +1590,31 @@ function setSpeed(speed) {
 }
 
 /**
+ * Show or hide the panel under the video (the pinned species keys and the note box), and
+ * remember the choice. A species list that failed to load shows the panel anyway, by CSS.
+ * @param {boolean} shown True to show the panel.
+ */
+function setDeck(shown) {
+  state.deckShown = shown;
+  document.body.dataset.deck = shown ? 'shown' : 'hidden';
+  dom.deckToggle.setAttribute('aria-pressed', String(shown));
+  storageSet(STORAGE.deck, shown ? '1' : '0');
+}
+
+/**
+ * Dock the guide as a column beside the video, or let it float over the page, and remember
+ * the choice. The overlay and an open wheel follow the stage's new size on their own.
+ * @param {boolean} docked True to dock the guide.
+ */
+function setGuideDock(docked) {
+  state.guideDocked = docked;
+  document.body.dataset.guideDock = docked ? 'docked' : 'floating';
+  dom.guideDock.setAttribute('aria-pressed', String(docked));
+  dom.guideDock.setAttribute('aria-label', docked ? 'Let the guide float over the page' : 'Dock the guide beside the video');
+  storageSet(STORAGE.guideDock, docked ? '1' : '0');
+}
+
+/**
  * Show or hide the quadrant lines and the center line, and remember the choice.
  * @param {boolean} on True to show the lines.
  */
@@ -1489,7 +1641,7 @@ function renderTransport() {
   }
 }
 
-/** Draw one pink tick on the scrub bar per sighting of this video. */
+/** Draw one tick on the scrub bar per row of this video: pink for a sighting, amber for a Later point. */
 function renderScrubMarks() {
   const length = dom.video.duration;
   if (!isVideoReady() || !Number.isFinite(length) || length <= 0) {
@@ -1500,7 +1652,7 @@ function renderScrubMarks() {
   for (const row of state.rows) {
     const seconds = Number(row.TimestampSeconds);
     if (row.TimestampSeconds !== '' && Number.isFinite(seconds)) {
-      const tick = el('span', { class: 'scrub-mark', data: { id: row.ID } });
+      const tick = el('span', { class: 'scrub-mark', data: { id: row.ID, status: labelStatus(row) } });
       tick.style.left = `${clampTime(seconds, length) / length * 100}%`;
       nodes.push(tick);
     }
@@ -1527,6 +1679,12 @@ async function toggleDone() {
   }
   const key = state.key;
   const done = state.videoStatus !== 'done';
+  const later = state.rows.filter((row) => labelStatus(row) === 'unlabeled').length;
+  if (done && later > 0) {
+    // The server refuses too; the page answers first so the refusal needs no round trip.
+    toast(`The done status was not saved. done: this video has ${later} unlabeled point(s). Label or delete them first, because a done video tells OnDeck that missing pinned species are absent.`, 'error');
+    return;
+  }
   try {
     const answer = await request('POST', '/api/videos/done', { key, done });
     const status = answer.video && answer.video.Status === 'done' ? 'done' : 'in progress';
@@ -1560,6 +1718,102 @@ function openNextVideo() {
   }
 }
 
+// --------------------------------------------------------------------- tracks
+
+/**
+ * Ask the server for the tracks of the open video, and ask again every TRACK_POLL_MS while
+ * some are still being made. The server queues the sightings that have no track yet when
+ * it answers, so the first answer for a video starts its tracking. Only the answer to the
+ * newest request counts, and an answer for a video that is no longer open is dropped.
+ * @returns {Promise<void>} Settles after the answer was taken in or dropped.
+ */
+async function loadTracks() {
+  window.clearTimeout(runtime.trackTimer);
+  runtime.trackTimer = null;
+  if (!state.key) {
+    return;
+  }
+  runtime.trackRequest += 1;
+  const ask = runtime.trackRequest;
+  const key = state.key;
+  let answer = null;
+  try {
+    answer = await request('GET', `/api/tracks?key=${encodeURIComponent(key)}`);
+  } catch (error) {
+    // The marks keep their tracks; a poll, a save, or the next open asks again.
+  }
+  if (ask !== runtime.trackRequest || key !== state.key) {
+    return;
+  }
+  if (answer) {
+    const read = readTrackAnswer(answer);
+    state.tracks = read.tracks;
+    state.trackPending = read.pending;
+    drawOverlay();
+  }
+  if (state.trackPending.length > 0) {
+    runtime.trackTimer = window.setTimeout(loadTracks, TRACK_POLL_MS);
+  }
+}
+
+/**
+ * Name the video time the overlay draws for: the frame on screen when Chrome reported it,
+ * otherwise the playhead (during a seek, and before the first frame).
+ * @returns {number} The time in seconds.
+ */
+function overlayTime() {
+  return runtime.presentedTime === null ? dom.video.currentTime : runtime.presentedTime;
+}
+
+/** Ask Chrome to call onPresentedFrame for the next frame it shows, once. */
+function watchFrames() {
+  if (!runtime.frameCallback) {
+    runtime.frameCallback = dom.video.requestVideoFrameCallback(onPresentedFrame);
+  }
+}
+
+/**
+ * Redraw the overlay for every frame Chrome shows, so a tracked mark moves with its sponge
+ * while the video plays, and keep watching. A paused video shows no new frames, so this
+ * costs nothing then.
+ * @param {DOMHighResTimeStamp} now The time the frame was shown, unused.
+ * @param {{mediaTime: number}} metadata The frame's details; mediaTime is its video time.
+ */
+function onPresentedFrame(now, metadata) {
+  runtime.frameCallback = 0;
+  runtime.presentedTime = metadata.mediaTime;
+  drawOverlay();
+  watchFrames();
+}
+
+/** Forget the frame on screen when a seek starts, so the overlay follows the playhead until the next frame shows. */
+function forgetPresentedFrame() {
+  runtime.presentedTime = null;
+}
+
+/** Stop watching frames when the source goes away; the next loadedmetadata starts again. */
+function stopWatchingFrames() {
+  if (runtime.frameCallback) {
+    dom.video.cancelVideoFrameCallback(runtime.frameCallback);
+    runtime.frameCallback = 0;
+  }
+  runtime.presentedTime = null;
+}
+
+/**
+ * Report the saved marks as last drawn, in viewport pixels. The end-to-end driver aims its
+ * clicks on moving marks with this.
+ * @returns {{time: number, marks: Array<{id: string, x: number, y: number, point: object,
+ *   tracked: boolean}>}} The video time the marks were drawn for, and each mark's center.
+ */
+function drawnInViewport() {
+  const bounds = dom.overlay.getBoundingClientRect();
+  return {
+    time: runtime.drawn.time,
+    marks: runtime.drawn.marks.map((mark) => ({ ...mark, x: bounds.left + mark.x, y: bounds.top + mark.y })),
+  };
+}
+
 // -------------------------------------------------------------------- overlay
 
 /**
@@ -1587,11 +1841,12 @@ function pictureRectInViewport() {
  * @param {Function} trace Builds the path (beginPath and the shapes).
  * @param {string} color The inner stroke color.
  * @param {number} width The inner stroke width in pixels.
+ * @param {Array<number>} [dash] A dash pattern for both strokes; empty draws solid lines.
  */
-function strokeOutlined(ctx, trace, color, width) {
+function strokeOutlined(ctx, trace, color, width, dash = []) {
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
-  ctx.setLineDash([]);
+  ctx.setLineDash(dash);
   ctx.strokeStyle = '#ffffff';
   ctx.lineWidth = width + 3;
   trace();
@@ -1653,6 +1908,7 @@ function drawGrid(ctx, rect) {
  * @param {string} text The tag text.
  * @param {{center: {x: number, y: number}, boxPx: ?object, radius: number}} shape Where drawMark drew the mark.
  * @param {{fill: string, ink: string, outline: string}} colors Tag colors.
+ * @returns {{x: number, y: number, w: number, h: number}} The tag rectangle in stage pixels.
  */
 function drawTag(ctx, rect, text, shape, colors) {
   ctx.font = CANVAS_FONT;
@@ -1672,6 +1928,7 @@ function drawTag(ctx, rect, text, shape, colors) {
   ctx.fillStyle = colors.ink;
   ctx.textBaseline = 'middle';
   ctx.fillText(text, left + 6, top + height / 2 + 1);
+  return { x: left, y: top, w: width, h: height };
 }
 
 /**
@@ -1679,19 +1936,21 @@ function drawTag(ctx, rect, text, shape, colors) {
  * @param {CanvasRenderingContext2D} ctx The overlay context.
  * @param {{x: number, y: number, w: number, h: number}} rect The picture in stage pixels.
  * @param {{point: {x: number, y: number}, box: ?object}} mark The mark in frame fractions.
- * @param {{color: string, width: number, radius: number}} style Stroke color, stroke width, ring radius.
+ * @param {{color: string, width: number, radius: number, dash: ?Array<number>}} style Stroke
+ *   color, stroke width, ring radius, and an optional dash pattern (Later points are dashed).
  * @returns {{center: {x: number, y: number}, boxPx: ?object, radius: number}} The drawn shape in
  *   stage pixels, which drawTag needs to place the tag.
  */
 function drawMark(ctx, rect, mark, style) {
   const center = toPixels(mark.point, rect);
+  const dash = style.dash || [];
   if (mark.box) {
     const corner = toPixels({ x: mark.box.x, y: mark.box.y }, rect);
     const boxPx = { x: corner.x, y: corner.y, w: mark.box.w * rect.w, h: mark.box.h * rect.h };
     strokeOutlined(ctx, () => {
       ctx.beginPath();
       ctx.rect(boxPx.x, boxPx.y, boxPx.w, boxPx.h);
-    }, style.color, style.width);
+    }, style.color, style.width, dash);
     return { center, boxPx, radius: style.radius };
   }
   const r = style.radius;
@@ -1702,7 +1961,7 @@ function drawMark(ctx, rect, mark, style) {
       ctx.moveTo(center.x + dx * (r + 4), center.y + dy * (r + 4));
       ctx.lineTo(center.x + dx * (r + TICK_REACH), center.y + dy * (r + TICK_REACH));
     }
-  }, style.color, style.width);
+  }, style.color, style.width, dash);
   ctx.beginPath();
   ctx.arc(center.x, center.y, 2.6, 0, Math.PI * 2);
   ctx.fillStyle = '#ffffff';
@@ -1714,7 +1973,11 @@ function drawMark(ctx, rect, mark, style) {
   return { center, boxPx: null, radius: r };
 }
 
-/** Redraw the overlay: quadrant highlight, grid, saved marks near this frame, and the live mark. */
+/**
+ * Redraw the overlay for the frame on screen: quadrant highlight, grid, saved and Later
+ * marks (along their tracks, or near their own time), the flash labels of recent picks,
+ * and the live mark. The saved marks' centers are kept in runtime.drawn for hit testing.
+ */
 function drawOverlay() {
   const width = dom.stage.clientWidth;
   const height = dom.stage.clientHeight;
@@ -1728,6 +1991,8 @@ function drawOverlay() {
   const ctx = dom.overlay.getContext('2d');
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   ctx.clearRect(0, 0, width, height);
+  const time = overlayTime();
+  runtime.drawn = { time, marks: [] };
   const rect = pictureRectLocal();
   if (rect.w === 0 || !state.key) {
     return;
@@ -1741,12 +2006,25 @@ function drawOverlay() {
   if (state.grid) {
     drawGrid(ctx, rect);
   }
-  for (const saved of marksNear(state.rows, dom.video.currentTime, SAVED_MARK_WINDOW_SECONDS)) {
-    const shape = drawMark(ctx, rect, saved, { color: '#2a2a2a', width: 1.5, radius: 8 });
-    drawTag(ctx, rect, `${saved.code} saved`, shape, {
-      fill: 'rgba(20, 20, 20, 0.82)', ink: '#ffffff', outline: 'rgba(255, 255, 255, 0.7)',
-    });
+  // A tracked sighting rides along its track; one without a track covering this time
+  // shows where it was clicked, near its own time.
+  for (const saved of marksAt(state.rows, state.tracks, time, SAVED_MARK_WINDOW_SECONDS)) {
+    let shape;
+    let tag;
+    if (saved.status === 'unlabeled') {
+      shape = drawMark(ctx, rect, saved, { color: LATER_COLOR, width: 2, radius: 8, dash: LATER_DASH });
+      tag = drawTag(ctx, rect, '?', shape, { fill: LATER_COLOR, ink: LATER_INK, outline: '#ffffff' });
+    } else {
+      shape = drawMark(ctx, rect, saved, { color: '#2a2a2a', width: 1.5, radius: 8 });
+      tag = drawTag(ctx, rect, `${saved.code} saved`, shape, {
+        fill: 'rgba(20, 20, 20, 0.82)', ink: '#ffffff', outline: 'rgba(255, 255, 255, 0.7)',
+      });
+    }
+    // The tag and the box take clicks too, so a click on any part of a mark edits it.
+    const areas = shape.boxPx ? [tag, shape.boxPx] : [tag];
+    runtime.drawn.marks.push({ id: saved.id, x: shape.center.x, y: shape.center.y, point: saved.point, tracked: saved.tracked, areas });
   }
+  drawFlashes(ctx, rect);
 
   const drag = runtime.drag;
   if (drag && isDrag(drag.startPx.x, drag.startPx.y, drag.nowPx.x, drag.nowPx.y)) {
@@ -1758,11 +2036,84 @@ function drawOverlay() {
     return;
   }
   if (state.pending) {
-    const shape = drawMark(ctx, rect, state.pending, { color: MARK_COLOR, width: 2.5, radius: 11 });
-    drawTag(ctx, rect, state.pending.species || '?', shape, {
-      fill: MARK_COLOR, ink: MARK_INK, outline: '#ffffff',
-    });
+    // No tag: the wheel sits over the mark and names the species.
+    drawMark(ctx, rect, state.pending, { color: MARK_COLOR, width: 2.5, radius: 11 });
   }
+}
+
+/**
+ * Draw the flash labels of this video: a fading label at the mark for a moment after each
+ * pick, and a red "not saved" tag for a save that failed, near its time, until Retry works.
+ * @param {CanvasRenderingContext2D} ctx The overlay context.
+ * @param {{x: number, y: number, w: number, h: number}} rect The picture in stage pixels.
+ */
+function drawFlashes(ctx, rect) {
+  const now = performance.now();
+  for (const flash of runtime.flashes) {
+    const look = flashView(flash, now, dom.video.currentTime, SAVED_MARK_WINDOW_SECONDS, FLASH_FADE_MS);
+    if (flash.key !== state.key || !look.draw) {
+      continue;
+    }
+    let colors = flash.later
+      ? { fill: LATER_COLOR, ink: LATER_INK, outline: '#ffffff' }
+      : { fill: MARK_COLOR, ink: MARK_INK, outline: '#ffffff' };
+    let text = flash.text;
+    if (flash.failed) {
+      colors = { fill: FAILED_COLOR, ink: FAILED_INK, outline: '#ffffff' };
+      text = 'not saved';
+    }
+    ctx.save();
+    ctx.globalAlpha = look.alpha;
+    const shape = drawMark(ctx, rect, flash, {
+      color: colors.fill, width: FLASH_RING.width, radius: FLASH_RING.radius, dash: flash.later ? LATER_DASH : [],
+    });
+    drawTag(ctx, rect, text, shape, colors);
+    ctx.restore();
+  }
+}
+
+/**
+ * Add a flash label for a pick and keep the overlay redrawing while it fades. The flash
+ * stays in the list while its save is unsettled, however long the server takes.
+ * @param {string} key The S3 key of the video.
+ * @param {number} time The video time of the pick in seconds.
+ * @param {{point: object, box: ?object}} mark The mark in frame fractions.
+ * @param {?string} code The species code, or null for a Later point.
+ * @returns {{key: string, time: number, point: object, box: ?object, text: string, later: boolean,
+ *   until: number, failed: boolean, pending: boolean}} The flash; the save settles it.
+ */
+function addFlash(key, time, mark, code) {
+  const species = code ? speciesByCode(code) : null;
+  const flash = {
+    key,
+    time,
+    point: mark.point,
+    box: mark.box,
+    text: code ? `${code} ${shortLabel(species ? species.name : '', FLASH_NAME_CHARS)}`.trim() : 'later',
+    later: !code,
+    until: performance.now() + FLASH_MS,
+    failed: false,
+    pending: true,
+  };
+  runtime.flashes.push(flash);
+  if (!runtime.flashFrame) {
+    runtime.flashFrame = window.requestAnimationFrame(flashTick);
+  }
+  return flash;
+}
+
+/**
+ * Redraw the overlay once per frame while a flash label fades, and drop the flashes that
+ * faded with their save settled.
+ */
+function flashTick() {
+  const now = performance.now();
+  runtime.flashes = runtime.flashes.filter((flash) => (
+    flashView(flash, now, dom.video.currentTime, SAVED_MARK_WINDOW_SECONDS, FLASH_FADE_MS).keep
+  ));
+  drawOverlay();
+  const fading = runtime.flashes.some((flash) => flash.until > now);
+  runtime.flashFrame = fading ? window.requestAnimationFrame(flashTick) : 0;
 }
 
 // -------------------------------------------------------------------- marking
@@ -1775,9 +2126,7 @@ function setMode(mode) {
   state.mode = mode;
   document.body.dataset.mode = mode;
   const marking = mode === 'marking';
-  dom.note.disabled = !marking;
-  dom.save.disabled = !marking;
-  dom.saveStay.disabled = !marking;
+  dom.note.disabled = !(marking && state.pending && state.pending.mode === 'new');
   dom.cancel.disabled = !marking;
   dom.modePill.textContent = marking ? 'Marking' : 'Screening';
 }
@@ -1795,15 +2144,14 @@ function renderMarkBar() {
     summary = `Pinning ${state.pinCandidate}: click the pin on a number key. Esc lets go.`;
   }
   if (pending) {
-    const species = speciesByCode(pending.species);
-    const chosen = pending.species
-      ? `${pending.species} ${species ? species.name : ''}`.trim()
-      : 'press 1 to 0, or type a name';
-    const shape = pending.box ? 'box' : 'point';
-    summary = `${QUADRANT_PHRASES[pending.quadrant]} · ${formatClock(pending.time)} · ${shape} · ${chosen}`;
-    if (state.saving) {
-      summary = 'Saving the sighting.';
+    const where = `${QUADRANT_PHRASES[pending.quadrant]} · ${formatClock(pending.time)} · ${pending.box ? 'box' : 'point'}`;
+    let action = 'pick a species in the wheel, or Space for later';
+    if (pending.mode === 'edit' && pending.status === 'unlabeled') {
+      action = `${pending.rowId} Later: pick a species, or Space to keep it for later`;
+    } else if (pending.mode === 'edit') {
+      action = `${pending.rowId} ${pending.code}: pick a new species, or Space to unlabel it`;
     }
+    summary = `${where} · ${action}`;
   }
   dom.markSummary.textContent = summary;
   dom.markSummary.title = summary;
@@ -1823,28 +2171,46 @@ function stagePoint(event) {
 }
 
 /**
- * Start a click or a drag on the picture. The video pauses at once, so the frame
- * under the pointer is the frame that gets saved.
+ * Start a click or a drag on the picture. The video pauses at once, so the frame under
+ * the pointer is the frame that gets saved. A press on a saved mark is noted against the
+ * marks as drawn when the button went down, before the pause, so a mark that moves with
+ * the video is hit where it was seen. An open wheel closes until the button comes up, and
+ * a press on the black bars beside the picture drops the mark.
  * @param {MouseEvent} event The mousedown on the overlay.
  */
 function onStageMouseDown(event) {
-  if (event.button !== 0 || !isVideoReady() || state.saving) {
+  if (event.button !== 0 || !isVideoReady()) {
     return;
   }
   const startPx = stagePoint(event);
   const start = toNormalized(startPx.x, startPx.y, pictureRectLocal());
   if (!start) {
+    dropMark();
     return;
   }
   event.preventDefault();
   if (document.activeElement instanceof HTMLElement && document.activeElement !== document.body) {
     document.activeElement.blur();
   }
+  const hit = state.pending ? null : rowNear(startPx);
   dom.video.pause();
+  wheel.close();
   disarmPin();
-  runtime.drag = { startPx, nowPx: startPx, start };
+  runtime.drag = { startPx, nowPx: startPx, start, hit, marking: Boolean(state.pending) };
   window.addEventListener('mousemove', onStageMouseMove);
   window.addEventListener('mouseup', onStageMouseUp);
+}
+
+/**
+ * Cancel the pending mark and play on when the picture is right-clicked, as Escape does,
+ * instead of opening the browser's menu. Without a mark the menu opens as usual.
+ * @param {MouseEvent} event The contextmenu event on the overlay.
+ */
+function onStageContextMenu(event) {
+  if (state.pending) {
+    event.preventDefault();
+    cancelMark();
+  }
 }
 
 /**
@@ -1859,7 +2225,9 @@ function onStageMouseMove(event) {
 }
 
 /**
- * Finish a click or a drag: a drag past 6 px makes a box, anything else makes a point.
+ * Finish a click or a drag: a drag past 6 px makes a box, anything else makes a point. A
+ * click on a drawn saved mark, with no mark on screen, opens the wheel for that row
+ * instead, whether the video was paused or playing.
  * @param {MouseEvent} event The mouseup.
  */
 function onStageMouseUp(event) {
@@ -1877,7 +2245,22 @@ function onStageMouseUp(event) {
     const dragged = end ? normalizeBox(drag.start, end) : null;
     box = isUsableBox(dragged) ? dragged : null;
   }
+  if (!box && drag.hit) {
+    openEdit(drag.hit);
+    return;
+  }
   beginMark(box ? anchorPoint(drag.start, box) : drag.start, box);
+}
+
+/**
+ * Find the row whose saved mark, as last drawn, sits nearest a stage position.
+ * @param {{x: number, y: number}} px The position in stage pixels.
+ * @returns {?Object<string, string>} The row whose tag or box holds the position, else the nearest
+ *   row within EDIT_REACH_PX, or null.
+ */
+function rowNear(px) {
+  const id = markAt(runtime.drawn.marks, px, EDIT_REACH_PX);
+  return id === null ? null : state.rows.find((row) => row.ID === id) || null;
 }
 
 /** Drop a drag that lost its mouseup, which happens when the window loses focus mid-drag. */
@@ -1886,53 +2269,168 @@ function abandonDrag() {
     window.removeEventListener('mousemove', onStageMouseMove);
     window.removeEventListener('mouseup', onStageMouseUp);
     runtime.drag = null;
+    dropMark();
     drawOverlay();
   }
 }
 
 /**
- * Start a mark, or replace the one on screen. A species that was already chosen stays,
- * so a second click only corrects the position.
+ * Start a new mark, or move the one on screen, and open the wheel on it.
  * @param {{x: number, y: number}} point The mark position in frame fractions (the box center for a box).
  * @param {?{x: number, y: number, w: number, h: number}} box The dragged box, or null for a click.
  */
 function beginMark(point, box) {
   const anchor = anchorPoint(point, box);
   state.pending = {
+    mode: 'new',
+    rowId: null,
+    code: null,
+    status: null,
+    key: state.key,
     time: dom.video.currentTime,
     point,
     box,
     quadrant: quadrantOf(anchor.x, anchor.y),
-    species: state.pending ? state.pending.species : null,
+    picked: false,
     error: null,
   };
   setMode('marking');
-  renderPins();
   renderMarkBar();
   drawOverlay();
+  openWheel();
 }
 
-/** Forget the pending mark and return to screening mode, without touching playback. */
+/**
+ * Open the wheel on a saved row of the open video, at its mark as drawn now, so a pick
+ * changes its species. The video pauses.
+ * @param {Object<string, string>} row An observation row of the open video.
+ */
+function openEdit(row) {
+  const [mark] = marksNear([row], Number(row.TimestampSeconds), 0);
+  if (!mark) {
+    toast(`${row.ID} has no readable time or point, so the wheel cannot open on it.`, 'error');
+    return;
+  }
+  dom.video.pause();
+  // The wheel opens on the mark where it is drawn now, along its track when one covers
+  // this frame; the quadrant stays the one the row records.
+  const [drawn] = marksAt([row], state.tracks, overlayTime(), Infinity);
+  const anchor = anchorPoint(mark.point, mark.box);
+  state.pending = {
+    mode: 'edit',
+    rowId: row.ID,
+    code: row.SpeciesCode || null,
+    status: mark.status,
+    key: state.key,
+    time: dom.video.currentTime,
+    point: drawn.point,
+    box: drawn.box,
+    quadrant: quadrantOf(anchor.x, anchor.y),
+    picked: false,
+    error: null,
+  };
+  setMode('marking');
+  renderMarkBar();
+  drawOverlay();
+  openWheel();
+}
+
+/**
+ * Name what the hub does for a pending mark.
+ * @param {{mode: string, status: ?string}} pending The pending mark.
+ * @returns {string} "Later" for a new mark, "Unlabel" for a labeled row, "Keep" for a Later point.
+ */
+function hubLabelOf(pending) {
+  if (pending.mode === 'new') {
+    return 'Later';
+  }
+  return pending.status === 'unlabeled' ? 'Keep' : 'Unlabel';
+}
+
+/**
+ * Work out where the wheel goes for the pending mark: on the mark, scaled to the view,
+ * and kept inside it. The view is the wheel layer, which covers the viewport, or the
+ * screen in full screen.
+ * @returns {?{center: {x: number, y: number}, scale: number, markPx: {x: number, y: number}}}
+ *   The placement in viewport pixels, or null without a mark or a picture.
+ */
+function wheelPlacement() {
+  const pending = state.pending;
+  const picture = pictureRectInViewport();
+  if (!pending || picture.w === 0) {
+    return null;
+  }
+  const anchor = anchorPoint(pending.point, pending.box);
+  const markPx = { x: picture.x + anchor.x * picture.w, y: picture.y + anchor.y * picture.h };
+  const view = { w: dom.wheelLayer.clientWidth, h: dom.wheelLayer.clientHeight };
+  const scale = wheelScale(view.w, view.h);
+  const center = placeWheel(markPx, view, WHEEL.outerRadius * scale + WHEEL_MARGIN_PX);
+  return { center: { x: center.x, y: center.y }, scale, markPx };
+}
+
+/** Open the wheel on the pending mark. */
+function openWheel() {
+  const pending = state.pending;
+  const place = wheelPlacement();
+  if (!pending || !place) {
+    return;
+  }
+  wheel.open({
+    mode: pending.mode,
+    rowId: pending.rowId,
+    hubLabel: hubLabelOf(pending),
+    species: state.species,
+    pins: state.pins,
+    current: pending.mode === 'edit' ? pending.code : null,
+    seen: seenCounts(state.rows),
+    center: place.center,
+    scale: place.scale,
+    markPx: place.markPx,
+  });
+}
+
+/** Put an open wheel back on its mark after the window, the stage, or full screen changed size. */
+function relayoutWheel() {
+  if (!wheel.isOpen()) {
+    return;
+  }
+  const place = wheelPlacement();
+  if (place) {
+    wheel.relayout(place.center, place.scale, place.markPx);
+  }
+}
+
+/** Forget the pending mark, close the wheel, and return to screening mode, without touching playback. */
 function endMark() {
   state.pending = null;
+  wheel.close();
   dom.note.value = '';
   clearFilter();
   if (document.activeElement === dom.filter || document.activeElement === dom.note) {
     document.activeElement.blur();
   }
   setMode('screening');
-  renderPins();
   renderMarkBar();
   drawOverlay();
 }
 
-/** Cancel the pending mark and play on. Escape and the Cancel button run this. */
+/**
+ * Cancel the pending mark and play on. Escape, a right-click on the wheel or on the picture,
+ * and the Cancel button run this.
+ */
 function cancelMark() {
-  if (!state.pending || state.saving) {
+  if (!state.pending) {
     return;
   }
   endMark();
   resumePlayback();
+}
+
+/** Drop the pending mark and leave the video paused. A click outside the wheel and the picture runs this. */
+function dropMark() {
+  if (state.pending) {
+    endMark();
+  }
 }
 
 /**
@@ -1949,105 +2447,520 @@ function waitForSeek() {
 }
 
 /**
- * Copy the paused frame at the video's native size and cut the crop out of it.
- * @param {{point: object, box: ?object}} mark The pending mark.
- * @returns {{frame: string, crop: string}} Base64 text of the JPEG frame and the PNG crop.
+ * Choose a species for the pending mark: save a new mark, or relabel the edited row.
+ * @param {string} code The species code.
+ * @param {boolean} shift True when Shift was held. A plain pick leaves the video paused;
+ *   Shift plays on.
+ */
+function pickSpecies(code, shift) {
+  const stay = !shift;
+  const pending = state.pending;
+  if (!pending || pending.picked) {
+    return;
+  }
+  showGuide(code, false);
+  if (pending.mode === 'edit') {
+    relabelPending(pending, code, stay);
+    return;
+  }
+  saveNew(pending, code, stay);
+}
+
+/**
+ * Choose the hub: save a new mark as a Later point, unlabel an edited labeled row, or
+ * keep an edited Later point as it is.
+ * @param {boolean} shift True when Shift was held. A plain choice leaves the video paused;
+ *   Shift plays on.
+ */
+function pickHub(shift) {
+  const stay = !shift;
+  const pending = state.pending;
+  if (!pending || pending.picked) {
+    return;
+  }
+  if (pending.mode === 'new') {
+    saveNew(pending, null, stay);
+  } else if (pending.status === 'labeled') {
+    relabelPending(pending, null, stay);
+  } else {
+    endMark();
+    if (!stay) {
+      resumePlayback();
+    }
+  }
+}
+
+/**
+ * Copy the paused frame at the video's native size. The copy is synchronous, so playback
+ * may resume right after it.
+ * @returns {HTMLCanvasElement} A canvas that holds the frame.
  * @throws {Error} When the video has no frame to copy yet.
  */
-function captureImages(mark) {
+function copyFrame() {
   const width = dom.video.videoWidth;
   const height = dom.video.videoHeight;
   if (!width || !height || dom.video.readyState < HAVE_CURRENT_DATA) {
-    throw new Error('frame_jpeg: the video has not shown this frame yet. Wait a moment, then press Enter again.');
+    throw new Error('frame_jpeg: the video has not shown this frame yet. Wait a moment, then pick again.');
   }
   const frame = document.createElement('canvas');
   frame.width = width;
   frame.height = height;
   frame.getContext('2d').drawImage(dom.video, 0, 0, width, height);
+  return frame;
+}
 
-  const area = cropRect(mark.point, mark.box, width, height, CROP_SIZE);
+/**
+ * Encode a canvas as base64 text without blocking the page.
+ * @param {HTMLCanvasElement} canvas The canvas.
+ * @param {string} type "image/jpeg" or "image/png".
+ * @param {string} field The request field the image goes to, for the error message.
+ * @param {number} [quality] The JPEG quality from 0 to 1.
+ * @returns {Promise<string>} The base64 text of the image.
+ * @throws {Error} When the browser cannot encode the canvas or read the result.
+ */
+function canvasBase64(canvas, type, field, quality) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error(`${field}: the browser could not encode the image, because the canvas has no pixels.`));
+        return;
+      }
+      const reader = new FileReader();
+      reader.addEventListener('load', () => resolve(stripDataUrl(reader.result)));
+      reader.addEventListener('error', () => reject(new Error(`${field}: the browser could not read the encoded image.`)));
+      reader.readAsDataURL(blob);
+    }, type, quality);
+  });
+}
+
+/**
+ * Encode the frame as JPEG and cut the crop around the mark as PNG.
+ * @param {HTMLCanvasElement} frame The copied frame at native size.
+ * @param {{point: {x: number, y: number}, box: ?object}} mark The mark in frame fractions.
+ * @returns {Promise<{frame: string, crop: string}>} Base64 text of the JPEG frame and the PNG crop.
+ * @throws {Error} When the browser cannot encode either image.
+ */
+async function encodeImages(frame, mark) {
+  const area = cropRect(mark.point, mark.box, frame.width, frame.height, CROP_SIZE);
   const crop = document.createElement('canvas');
   crop.width = area.sw;
   crop.height = area.sh;
   crop.getContext('2d').drawImage(frame, area.sx, area.sy, area.sw, area.sh, 0, 0, area.sw, area.sh);
-  return {
-    frame: stripDataUrl(frame.toDataURL('image/jpeg', JPEG_QUALITY)),
-    crop: stripDataUrl(crop.toDataURL('image/png')),
-  };
+  const [jpeg, png] = await Promise.all([
+    canvasBase64(frame, 'image/jpeg', 'frame_jpeg', JPEG_QUALITY),
+    canvasBase64(crop, 'image/png', 'crop_png'),
+  ]);
+  return { frame: jpeg, crop: png };
 }
 
 /**
- * Save the pending mark as a sighting.
- * @param {boolean} stay True keeps the video paused after the save (Shift+Enter), false plays on.
+ * Save a new mark the fast way: copy the paused frame, close the wheel, show the flash
+ * label, and play on only when asked (Shift); then encode the images and post them in the
+ * background.
+ * @param {object} pending The pending mark.
+ * @param {?string} code The species code, or null for a Later point.
+ * @param {boolean} stay True keeps the video paused afterwards.
  * @returns {Promise<void>} Settles after the server stored or refused the sighting.
  */
-async function savePending(stay) {
-  const pending = state.pending;
-  if (!pending || state.saving) {
-    return;
-  }
-  if (!pending.species) {
-    pending.error = null;
-    toast('Pick a species first.', 'error', TOAST_MS);
-    renderMarkBar();
-    return;
-  }
-  state.saving = true;
-  pending.error = null;
-  renderMarkBar();
-  const key = state.key;
-  let row;
+async function saveNew(pending, code, stay) {
+  pending.picked = true;
+  runtime.pickCount += 1;
+  const save = {
+    key: state.key,
+    order: runtime.pickCount,
+    frame: null,
+    mark: null,
+    time: 0,
+    species: code,
+    note: '',
+    body: null,
+    flash: null,
+    reason: '',
+    sending: false,
+  };
+  // Z and leaving the page wait for this save from the moment of the pick. Until the save
+  // goes to sendObservation, any fault releases it, so nothing waits for a save that never
+  // goes out.
+  trackSave(save);
   try {
     await waitForSeek();
-    const images = captureImages(pending);
-    const answer = await request('POST', '/api/observations', {
-      key,
-      time: Math.round(dom.video.currentTime * 1000) / 1000,
+    if (state.pending !== pending) {
+      untrackSave(save);
+      return;
+    }
+    try {
+      save.frame = copyFrame();
+    } catch (error) {
+      untrackSave(save);
+      pending.picked = false;
+      pending.error = `Not saved. ${endSentence(error.message)}`;
+      toast(pending.error, 'error');
+      renderMarkBar();
+      return;
+    }
+    save.mark = {
       point: { x: pending.point.x, y: pending.point.y },
       box: pending.box ? { x: pending.box.x, y: pending.box.y, w: pending.box.w, h: pending.box.h } : null,
-      species: pending.species,
-      note: dom.note.value,
-      frame_jpeg: images.frame,
-      crop_png: images.crop,
-    });
-    if (!answer.row || typeof answer.row.ID !== 'string') {
-      throw new ApiError('row: the server answered without the saved row. Check observations.csv before you mark this sponge again.', 0);
+    };
+    save.time = Math.round(dom.video.currentTime * 1000) / 1000;
+    save.note = dom.note.value;
+    endMark();
+    save.flash = addFlash(save.key, save.time, save.mark, code);
+    if (!stay) {
+      resumePlayback();
     }
-    row = answer.row;
   } catch (error) {
-    state.saving = false;
-    pending.error = `Not saved. ${endSentence(error.message)}`;
-    toast(pending.error, 'error');
-    renderMarkBar();
+    untrackSave(save);
+    if (save.flash) {
+      save.flash.pending = false;
+    }
+    if (state.pending === pending) {
+      pending.picked = false;
+    }
+    console.error(`saveNew: the pick was not saved: ${error.message}`);
+    toast(`Not saved. ${endSentence(error.message)}`, 'error');
     return;
   }
-  state.saving = false;
-  if (key === state.key) {
+  await sendObservation(save);
+}
+
+/**
+ * Note a save the server has not answered yet, so Z and leaving the page wait for it.
+ * @param {{key: string}} save The save.
+ */
+function trackSave(save) {
+  runtime.inFlight.add(save);
+}
+
+/**
+ * Forget a save that has its answer (or never started), and wake every wait whose video
+ * has no save in flight any more.
+ * @param {{key: string}} save The save.
+ */
+function untrackSave(save) {
+  runtime.inFlight.delete(save);
+  runtime.settleWaiters = runtime.settleWaiters.filter((waiter) => {
+    if (savesInFlight(waiter.key) > 0) {
+      return true;
+    }
+    waiter.resolve();
+    return false;
+  });
+}
+
+/**
+ * Count the saves of a video that wait for the server's answer.
+ * @param {?string} key The S3 key of the video.
+ * @returns {number} The count.
+ */
+function savesInFlight(key) {
+  return Array.from(runtime.inFlight).filter((save) => save.key === key).length;
+}
+
+/**
+ * Wait until every save of a video has its answer, for at most a time limit.
+ * @param {?string} key The S3 key of the video.
+ * @param {number} limitMs The longest wait in milliseconds.
+ * @returns {Promise<boolean>} True when the saves settled (at once when nothing of that
+ *   video is in flight), false when the limit ran out first.
+ */
+function savesSettled(key, limitMs) {
+  if (savesInFlight(key) === 0) {
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    const waiter = {
+      key,
+      resolve: () => {
+        window.clearTimeout(timer);
+        resolve(true);
+      },
+    };
+    const timer = window.setTimeout(() => {
+      runtime.settleWaiters = runtime.settleWaiters.filter((item) => item !== waiter);
+      resolve(false);
+    }, limitMs);
+    runtime.settleWaiters.push(waiter);
+  });
+}
+
+/**
+ * Encode the images of a save unless that happened before, and post the sighting.
+ * @param {object} save The save that saveNew built.
+ * @returns {Promise<{row: Object<string, string>, reopened: ?boolean}>} The server's answer.
+ * @throws {Error} When an image cannot be encoded, the server refuses the row, or the
+ *   answer holds no row.
+ */
+async function postSave(save) {
+  if (!save.body) {
+    const images = await encodeImages(save.frame, save.mark);
+    save.body = {
+      key: save.key,
+      time: save.time,
+      point: save.mark.point,
+      box: save.mark.box,
+      species: save.species,
+      note: save.note,
+      frame_jpeg: images.frame,
+      crop_png: images.crop,
+    };
+    save.frame = null;
+  }
+  const answer = await request('POST', '/api/observations', save.body);
+  if (!answer.row || typeof answer.row.ID !== 'string') {
+    throw new ApiError('row: the server answered without the saved row. Check observations.csv before you mark this sponge again.', 0);
+  }
+  return answer;
+}
+
+/**
+ * Post a save and report the result. Only the request and the answer check count as a
+ * failure; a fault while the page shows a saved row goes to the console and is never
+ * retried, because the row is already on the server. The Retry button of a failed save
+ * runs this again with the same save.
+ * @param {object} save The save that saveNew built.
+ * @returns {Promise<void>} Settles after the server stored or refused the sighting.
+ */
+async function sendObservation(save) {
+  if (save.sending) {
+    return;
+  }
+  save.sending = true;
+  trackSave(save);
+  try {
+    let answer;
+    try {
+      answer = await postSave(save);
+    } catch (error) {
+      onSaveFailed(save, error);
+      return;
+    }
+    try {
+      onSaved(save, answer);
+    } catch (error) {
+      console.error(`row: ${answer.row.ID} is saved, but the page could not show it: ${error.message}`);
+    }
+  } finally {
+    save.sending = false;
+    untrackSave(save);
+  }
+}
+
+/**
+ * Take a stored sighting into the lists, the counts, and the tally.
+ * @param {object} save The save that was posted.
+ * @param {{row: Object<string, string>, reopened: ?boolean}} answer The server's answer.
+ */
+function onSaved(save, answer) {
+  const row = answer.row;
+  save.flash.pending = false;
+  if (save.flash.failed) {
+    runtime.flashes = runtime.flashes.filter((flash) => flash !== save.flash);
+  }
+  runtime.unsaved = runtime.unsaved.filter((item) => item !== save);
+  renderUnsaved();
+  if (save.key === state.key && !state.rows.some((item) => item.ID === row.ID)) {
     state.rows.push(row);
     markFresh(row.ID);
   }
-  adjustVideoEntry(key, 1);
-  endMark();
+  if (save.key === state.key) {
+    // The server queued the new sighting's track; ask until it arrives.
+    loadTracks();
+  }
+  const later = labelStatus(row) === 'unlabeled';
+  adjustVideoEntry(save.key, later ? 'unlabeled' : 'sightings', 1);
   renderSightings();
   renderBrowser();
   refreshTally();
-  toast(`Saved ${row.ID} ${row.SpeciesCode}`);
+  refreshToLabel();
+  drawOverlay();
+  toast(later ? `Saved ${row.ID} for later` : `Saved ${row.ID} ${row.SpeciesCode}`);
+  applyReopened(answer, save.key);
+}
+
+/**
+ * Report a failed save: its flash label turns into a red "not saved" tag, however late
+ * the failure came, and the one error toast of unsaved picks counts it.
+ * @param {object} save The save that failed. It keeps its images in memory.
+ * @param {Error} error What went wrong.
+ */
+function onSaveFailed(save, error) {
+  save.flash.failed = true;
+  save.flash.pending = false;
+  save.reason = endSentence(error.message);
+  if (!runtime.unsaved.includes(save)) {
+    runtime.unsaved.push(save);
+  }
+  renderUnsaved();
+  if (save.species === null) {
+    refreshVideoStatus(save.key);
+  }
+  drawOverlay();
+}
+
+/**
+ * Show one sticky error toast for every pick whose save failed, with one Retry button that
+ * sends them all again, or remove it when none is left.
+ */
+function renderUnsaved() {
+  const saves = runtime.unsaved;
+  if (saves.length === 0) {
+    if (runtime.unsavedToast) {
+      runtime.unsavedToast.remove();
+      runtime.unsavedToast = null;
+    }
+    return;
+  }
+  const summary = unsavedSummary(saves.map((save) => {
+    const species = save.species ? speciesByCode(save.species) : null;
+    return { code: save.species, name: species ? species.name : '', time: save.time };
+  }));
+  const reason = saves[saves.length - 1].reason;
+  const tail = `The page kept the images, so Retry sends ${saves.length === 1 ? 'it' : 'them'} again.`;
+  const message = [summary, reason, tail].filter(Boolean).join(' ');
+  if (runtime.unsavedToast && runtime.unsavedToast.isConnected) {
+    runtime.unsavedToast.querySelector('.toast-text').textContent = message;
+    state.lastToast = { message, kind: 'error' };
+    return;
+  }
+  runtime.unsavedToast = toast(message, 'error', Infinity, {
+    label: 'Retry',
+    title: 'You send every unsaved sighting to the server again. The page kept their frames and crops, so nothing is lost.',
+    run: retryUnsaved,
+  });
+}
+
+/** Send every unsaved pick to the server again. The Retry button of the error toast runs this. */
+function retryUnsaved() {
+  for (const save of runtime.unsaved.slice()) {
+    sendObservation(save);
+  }
+}
+
+/**
+ * Change the species of the edited row, or clear it (code null). The wheel closes at once,
+ * the video plays on only when asked (Shift), and the lists follow when the server answers.
+ * @param {object} pending The pending edit.
+ * @param {?string} code The new species code, or null to unlabel the row.
+ * @param {boolean} stay True keeps the video paused afterwards.
+ * @returns {Promise<void>} Settles after the server changed or refused the row.
+ */
+async function relabelPending(pending, code, stay) {
+  pending.picked = true;
+  const id = pending.rowId;
+  endMark();
   if (!stay) {
     resumePlayback();
   }
+  if (code !== null && code === pending.code && pending.status === 'labeled') {
+    return;
+  }
+  try {
+    const answer = await request('PATCH', `/api/observations/${encodeURIComponent(id)}`, { species: code });
+    if (!answer.row || answer.row.ID !== id) {
+      throw new ApiError(`row: the server answered without ${id}. Reload the page before you change it again.`, 0);
+    }
+    applyRelabel(answer.row, pending.status);
+    toast(code ? `${id} is now ${code}` : `${id} waits in the To label list`);
+    applyReopened(answer, pending.key);
+  } catch (error) {
+    toast(`${id} was not changed. ${endSentence(error.message)}`, 'error');
+    if (code === null) {
+      refreshVideoStatus(pending.key);
+    }
+  }
+}
+
+/**
+ * Put a relabeled row in place of the old one in both lists, so the thumbnails use its
+ * new file names, and update the counts.
+ * @param {Object<string, string>} row The row the server answered with.
+ * @param {string} before The label status of the row before the change.
+ */
+function applyRelabel(row, before) {
+  const after = labelStatus(row);
+  state.rows = state.rows.map((item) => (item.ID === row.ID ? row : item));
+  const listed = state.toLabel.some((item) => item.ID === row.ID);
+  if (after === 'unlabeled') {
+    state.toLabel = listed ? state.toLabel.map((item) => (item.ID === row.ID ? row : item)) : state.toLabel.concat(row);
+  } else {
+    state.toLabel = state.toLabel.filter((item) => item.ID !== row.ID);
+  }
+  if (after !== before) {
+    adjustVideoEntry(row.S3Key, 'sightings', after === 'labeled' ? 1 : -1);
+    adjustVideoEntry(row.S3Key, 'unlabeled', after === 'unlabeled' ? 1 : -1);
+  }
+  renderSightings();
+  renderToLabel();
+  renderBrowser();
+  refreshTally();
+  refreshToLabel();
+  drawOverlay();
+}
+
+/**
+ * Ask the server for the status of a video again after a Later save or an unlabel failed,
+ * because the server may have moved a done video back to in progress before the failure.
+ * POST /api/videos/open answers with the status and changes nothing else for an open video.
+ * @param {string} key The S3 key of the video.
+ * @returns {Promise<void>} Settles after the Done button and the browser row show the answer.
+ */
+async function refreshVideoStatus(key) {
+  let answer;
+  try {
+    answer = await request('POST', '/api/videos/open', { key });
+  } catch (error) {
+    // The error toast of the failed save already says the server did not answer; the
+    // status on screen stays until the next open or save.
+    return;
+  }
+  const status = answer.video && answer.video.Status === 'done' ? 'done' : 'in progress';
+  const entry = videoEntry(key);
+  if (entry) {
+    entry.status = status;
+  }
+  if (key === state.key) {
+    state.videoStatus = status;
+  }
+  renderDone();
+  renderBrowser();
+}
+
+/**
+ * Follow the server when a save or an unlabel returned a done video to in progress,
+ * because a done video never holds Later points.
+ * @param {{reopened: ?boolean}} answer The answer of POST or PATCH /api/observations. A
+ *   missing field counts as false.
+ * @param {string} key The S3 key of the video the row belongs to.
+ */
+function applyReopened(answer, key) {
+  if (answer.reopened !== true) {
+    return;
+  }
+  const entry = videoEntry(key);
+  if (entry) {
+    entry.status = 'in progress';
+  }
+  if (key === state.key) {
+    state.videoStatus = 'in progress';
+  }
+  renderDone();
+  renderBrowser();
+  toast('This video is back in progress because it now has a point to label.', 'info');
 }
 
 // ------------------------------------------------------- sightings and tally
 
 /**
- * Change the sighting count of a video row after a save or a delete.
+ * Change a count of a video row after a save, a relabel, or a delete.
  * @param {string} key The S3 key of the video.
- * @param {number} change 1 after a save, -1 after a delete.
+ * @param {string} field "sightings" for labeled rows, "unlabeled" for Later points.
+ * @param {number} change 1 for a row added to the count, -1 for a row taken out.
  */
-function adjustVideoEntry(key, change) {
+function adjustVideoEntry(key, field, change) {
   const entry = videoEntry(key);
   if (entry) {
-    entry.sightings = Math.max(0, (Number(entry.sightings) || 0) + change);
+    entry[field] = Math.max(0, (Number(entry[field]) || 0) + change);
     if (entry.status === 'new') {
       entry.status = 'in progress';
     }
@@ -2070,7 +2983,7 @@ function markFresh(id) {
 /** Draw the sightings of the open video, ordered along the timeline. */
 function renderSightings() {
   const rows = sortRowsByTime(state.rows);
-  dom.sightingsCount.textContent = String(rows.length);
+  dom.sightingsCount.textContent = sightingsCount(rows);
   dom.sightingsEmpty.hidden = rows.length > 0;
   dom.sightingsEmpty.textContent = state.key
     ? 'No sightings in this video yet.'
@@ -2084,14 +2997,11 @@ function renderSightings() {
 }
 
 /**
- * Build one sighting row: the crop, the species, the time, the note, and the delete button.
+ * Build the crop thumbnail of a row. A missing file leaves an empty square, never a broken image.
  * @param {Object<string, string>} row An observation row from the server.
- * @returns {HTMLElement} The list item.
+ * @returns {HTMLImageElement} The thumbnail.
  */
-function sightingNode(row) {
-  const species = speciesByCode(row.SpeciesCode);
-  const name = species ? species.name : row['Sponge Type'] || row.SpeciesCode;
-  const clock = row.Timestamp || formatClock(Number(row.TimestampSeconds));
+function cropThumb(row) {
   const thumb = el('img', {
     class: 'sighting-thumb',
     attrs: {
@@ -2105,17 +3015,34 @@ function sightingNode(row) {
   thumb.addEventListener('error', () => {
     thumb.dataset.missing = 'true';
   }, { once: true });
+  return thumb;
+}
+
+/**
+ * Build one sighting row: the crop, the species (or Later), the time, the note, and the
+ * delete button.
+ * @param {Object<string, string>} row An observation row from the server.
+ * @returns {HTMLElement} The list item.
+ */
+function sightingNode(row) {
+  const status = labelStatus(row);
+  const species = speciesByCode(row.SpeciesCode);
+  const name = species ? species.name : row['Sponge Type'] || row.SpeciesCode;
+  const clock = row.Timestamp || formatClock(Number(row.TimestampSeconds));
+  const title = status === 'unlabeled'
+    ? `You jump to ${row.ID} at ${clock}, and the wheel opens on it so you can give it a species. ${row.Notes || ''}`
+    : `You jump to ${row.ID} at ${clock} and the video pauses there. ${name}. ${row.Notes || ''}`;
 
   const jump = el('button', {
     class: 'sighting-jump',
-    title: `You jump to ${row.ID} at ${clock} and the video pauses there. ${name}. ${row.Notes || ''}`.trim(),
+    title: title.trim(),
     attrs: { type: 'button' },
     data: { id: row.ID },
   }, [
-    thumb,
+    cropThumb(row),
     el('span', { class: 'sighting-text' }, [
       el('span', { class: 'sighting-line' }, [
-        el('span', { class: 'sighting-code', text: row.SpeciesCode }),
+        el('span', { class: 'sighting-code', text: status === 'unlabeled' ? 'Later' : row.SpeciesCode }),
         el('span', { class: 'sighting-time', text: clock }),
       ]),
       el('span', { class: 'sighting-sub', text: `${row.ID} · ${row.Notes || ''}` }),
@@ -2138,6 +3065,7 @@ function sightingNode(row) {
       id: row.ID,
       time: row.TimestampSeconds,
       code: row.SpeciesCode,
+      status,
       fresh: String(runtime.freshId === row.ID),
       armed: String(armed),
     },
@@ -2145,7 +3073,8 @@ function sightingNode(row) {
 }
 
 /**
- * React to a click in the sightings list: jump to a sighting, or arm and confirm its removal.
+ * React to a click in the sightings list: jump to a sighting, open the wheel on a Later
+ * point, or arm and confirm a removal.
  * @param {MouseEvent} event The click.
  */
 function onSightingsClick(event) {
@@ -2169,7 +3098,9 @@ function onSightingsClick(event) {
   const jump = event.target.closest('.sighting-jump');
   if (jump) {
     const row = state.rows.find((item) => item.ID === jump.dataset.id);
-    if (row && isVideoReady()) {
+    if (row && labelStatus(row) === 'unlabeled') {
+      jumpToRow(row);
+    } else if (row && isVideoReady()) {
       dom.video.pause();
       seekTo(Number(row.TimestampSeconds));
     }
@@ -2184,37 +3115,105 @@ function disarmDelete() {
 }
 
 /**
- * Remove one sighting on the server and from the lists.
+ * Remove one sighting on the server and from the lists. The server moves its images and
+ * its track to the trash, and the page asks for the video's tracks again, because the next
+ * sighting may receive the same ID.
  * @param {string} id The sighting ID, such as "ID007".
+ * @param {string} [doneText] The toast after the removal; the default names the row as removed.
  * @returns {Promise<void>} Settles after the server removed or refused the row.
  */
-async function deleteSighting(id) {
+async function deleteSighting(id, doneText = '') {
   const key = state.key;
   try {
     const answer = await request('DELETE', `/api/observations/${encodeURIComponent(id)}`);
     const gone = answer.deleted || {};
     if (key === state.key) {
       state.rows = state.rows.filter((row) => row.ID !== id);
+      state.tracks = Object.fromEntries(Object.entries(state.tracks).filter(([trackId]) => trackId !== id));
+      state.trackPending = state.trackPending.filter((pendingId) => pendingId !== id);
+      loadTracks();
     }
-    adjustVideoEntry(key, -1);
-    toast(`Removed ${id} ${gone.SpeciesCode || ''}`.trim());
+    const later = labelStatus(gone) === 'unlabeled';
+    adjustVideoEntry(key, later ? 'unlabeled' : 'sightings', -1);
+    toast(doneText || (later ? `Removed ${id}, a point saved for later` : `Removed ${id} ${gone.SpeciesCode || ''}`.trim()));
   } catch (error) {
     toast(`${id} was not removed. ${endSentence(error.message)}`, 'error');
   }
   renderSightings();
   renderBrowser();
   refreshTally();
+  refreshToLabel();
   drawOverlay();
 }
 
-/** Remove the sighting that was saved last in this video. The Z key runs this. */
-function undoLastSighting() {
-  const last = lastSighting(state.rows);
-  if (!last) {
-    toast('This video has no sighting to remove.', 'info');
+/**
+ * Undo the last pick of this video. The Z key runs this.
+ *
+ * A save still on its way to the server is the last pick, so Z first waits for this
+ * video's saves, at most UNDO_WAIT_LIMIT_MS; when the limit runs out it says so and does
+ * nothing. Then, when this video holds an unsaved (failed) pick, Z discards the most recent
+ * one and changes nothing on the server. Only a video with no unsaved pick loses its last
+ * saved sighting. A second Z while one is waiting or removing is ignored.
+ * @returns {Promise<void>} Settles after the discard, the removal, the refusal, or the video change.
+ */
+async function undoLastSighting() {
+  if (runtime.undoing) {
     return;
   }
-  deleteSighting(last.ID);
+  runtime.undoing = true;
+  try {
+    const key = state.key;
+    if (savesInFlight(key) > 0) {
+      const notice = window.setTimeout(() => toast('Waiting for the last save', 'info'), UNDO_NOTICE_MS);
+      const settled = await savesSettled(key, UNDO_WAIT_LIMIT_MS);
+      window.clearTimeout(notice);
+      if (!settled) {
+        toast('The last save has not answered yet. Z did nothing.', 'info');
+        return;
+      }
+      if (key !== state.key) {
+        return;
+      }
+    }
+    const unsaved = latestUnsaved(runtime.unsaved, key);
+    if (unsaved) {
+      discardUnsaved(unsaved);
+      return;
+    }
+    const last = lastSighting(state.rows);
+    if (!last) {
+      toast('This video has no sighting to remove.', 'info');
+      return;
+    }
+    await deleteSighting(last.ID);
+  } finally {
+    runtime.undoing = false;
+  }
+}
+
+/**
+ * Drop an unsaved pick: it leaves the Retry list and its red tag leaves the picture. The
+ * server never had it, so nothing there changes.
+ * @param {object} save The unsaved pick.
+ */
+function discardUnsaved(save) {
+  runtime.unsaved = runtime.unsaved.filter((item) => item !== save);
+  runtime.flashes = runtime.flashes.filter((flash) => flash !== save.flash);
+  renderUnsaved();
+  drawOverlay();
+  toast(discardedText(save.species, save.time), 'info');
+}
+
+/**
+ * Ask before the page closes or reloads while a save is in flight or failed, because the
+ * page holds those images and nothing else does.
+ * @param {BeforeUnloadEvent} event The beforeunload event.
+ */
+function onBeforeUnload(event) {
+  if (leaveBlocked(runtime.inFlight.size, runtime.unsaved.length)) {
+    event.preventDefault();
+    event.returnValue = '';
+  }
 }
 
 /**
@@ -2222,14 +3221,24 @@ function undoLastSighting() {
  * @returns {Promise<void>} Settles after the table shows the tally or the error.
  */
 async function refreshTally() {
+  runtime.tallyToken += 1;
+  const token = runtime.tallyToken;
+  let answer = null;
+  let problem = null;
   try {
-    const answer = await request('GET', '/api/tally');
+    answer = await request('GET', '/api/tally');
+  } catch (error) {
+    problem = `The tally did not load. ${endSentence(error.message)}`;
+  }
+  if (token !== runtime.tallyToken) {
+    return;
+  }
+  if (answer) {
     state.tally = Array.isArray(answer.tally) ? answer.tally : [];
     state.tallyTotal = Number(answer.total) || 0;
-    state.tallyError = null;
-  } catch (error) {
-    state.tallyError = `The tally did not load. ${endSentence(error.message)}`;
+    state.tallyUnlabeled = Number(answer.unlabeled) || 0;
   }
+  state.tallyError = problem;
   renderTally();
 }
 
@@ -2238,9 +3247,9 @@ function renderTally() {
   dom.tallyTarget.textContent = `target ${state.tallyTarget}`;
   dom.tallyEmpty.hidden = !state.tallyError;
   dom.tallyEmpty.textContent = state.tallyError || '';
-  dom.tallyTotal.textContent = state.tallyTotal === 1
-    ? '1 sighting across all videos.'
-    : `${state.tallyTotal} sightings across all videos.`;
+  const sightings = state.tallyTotal === 1 ? '1 sighting' : `${state.tallyTotal} sightings`;
+  const points = state.tallyUnlabeled === 1 ? '1 point' : `${state.tallyUnlabeled} points`;
+  dom.tallyTotal.textContent = `${sightings} across all videos. ${points} to label.`;
   const rows = mergeTally(state.tally, state.pins, state.species);
   const nodes = [];
   let dividerPlaced = false;
@@ -2268,6 +3277,127 @@ function renderTally() {
     ]));
   }
   dom.tallyRows.replaceChildren(...nodes);
+}
+
+// ----------------------------------------------------------------- to label
+
+/**
+ * Load the Later points of every video. Only the answer to the newest request counts,
+ * so quick saves in a row cannot leave an older list on screen.
+ * @returns {Promise<void>} Settles after the list shows the points or the error.
+ */
+async function refreshToLabel() {
+  runtime.toLabelToken += 1;
+  const token = runtime.toLabelToken;
+  let rows = null;
+  let problem = null;
+  try {
+    const answer = await request('GET', '/api/observations?status=unlabeled');
+    rows = Array.isArray(answer.rows) ? answer.rows : [];
+  } catch (error) {
+    problem = `The To label list did not load. ${endSentence(error.message)}`;
+  }
+  if (token !== runtime.toLabelToken) {
+    return;
+  }
+  if (rows) {
+    state.toLabel = rows;
+  }
+  state.toLabelError = problem;
+  renderToLabel();
+}
+
+/** Draw the To label list, newest point first. */
+function renderToLabel() {
+  dom.toLabelCount.textContent = String(state.toLabel.length);
+  dom.toLabel.replaceChildren(...state.toLabel.slice().reverse().map(toLabelNode));
+  dom.toLabelEmpty.textContent = state.toLabelError || 'No points waiting for a label.';
+  dom.toLabelEmpty.hidden = state.toLabel.length > 0 && !state.toLabelError;
+}
+
+/**
+ * Build one To label row: the crop, the site and transect part of the file name, the time,
+ * and the ID with the rest of the file name.
+ * @param {Object<string, string>} row A Later row from the server.
+ * @returns {HTMLElement} The list item.
+ */
+function toLabelNode(row) {
+  const parts = splitVideoName(row.FileName || row.S3Key);
+  const clock = row.Timestamp || formatClock(Number(row.TimestampSeconds));
+  const jump = el('button', {
+    class: 'sighting-jump',
+    title: `You open ${row.FileName} at ${clock}, and the wheel opens on ${row.ID} so you can give it a species.`,
+    attrs: { type: 'button' },
+    data: { id: row.ID },
+  }, [
+    cropThumb(row),
+    el('span', { class: 'sighting-text' }, [
+      el('span', { class: 'sighting-line' }, [
+        el('span', { class: 'to-label-name', text: parts.main }),
+        el('span', { class: 'sighting-time', text: clock }),
+      ]),
+      el('span', { class: 'sighting-sub', text: parts.lead ? `${row.ID} · ${parts.lead}` : row.ID }),
+    ]),
+  ]);
+  return el('li', {
+    class: 'to-label-item',
+    data: { id: row.ID, key: row.S3Key },
+  }, [jump]);
+}
+
+/**
+ * React to a click in the To label list: open that point in the wheel.
+ * @param {MouseEvent} event The click.
+ */
+function onToLabelClick(event) {
+  const item = event.target.closest('.to-label-item');
+  const row = item ? state.toLabel.find((entry) => entry.ID === item.dataset.id) : null;
+  if (row) {
+    jumpToRow(row);
+  }
+}
+
+/**
+ * Build the entry that opens the video of a row: the catalog entry when the folder on
+ * screen holds the video, otherwise one made from the row.
+ * @param {Object<string, string>} row An observation row from the server.
+ * @returns {{key: string, name: string, playable: boolean, converted: ?string, status: string}} The entry.
+ */
+function entryForRow(row) {
+  const listed = videoEntry(row.S3Key);
+  if (listed) {
+    return listed;
+  }
+  const extension = String(row.FileName).split('.').pop().toLowerCase();
+  return {
+    key: row.S3Key,
+    name: row.FileName,
+    playable: PLAYABLE_EXTENSIONS.includes(extension),
+    converted: null,
+    status: 'in progress',
+  };
+}
+
+/**
+ * Go to a Later point and open the wheel on it: seek and pause when its video is open,
+ * otherwise open that video, which lands on the point once it loads.
+ * @param {Object<string, string>} row A Later row from the server.
+ * @returns {Promise<void>} Settles after the wheel opened or the video started loading.
+ */
+async function jumpToRow(row) {
+  const jump = { key: row.S3Key, time: Number(row.TimestampSeconds), row };
+  if (row.S3Key !== state.key) {
+    openVideo(entryForRow(row), jump);
+    return;
+  }
+  if (!isVideoReady()) {
+    runtime.jump = jump;
+    return;
+  }
+  dropMark();
+  dom.video.pause();
+  seekTo(jump.time);
+  await landJump(jump);
 }
 
 // ------------------------------------------------- settings, export, and help
@@ -2302,7 +3432,7 @@ async function exportPackage() {
   dom.exportButton.disabled = true;
   try {
     const answer = await request('POST', '/api/export', {});
-    toast(`Exported ${answer.observations} sightings to ${answer.path}`, 'ok', LONG_TOAST_MS);
+    toast(exportSummary(answer), 'ok', LONG_TOAST_MS);
   } catch (error) {
     toast(`The export failed. ${endSentence(error.message)}`, 'error', LONG_TOAST_MS);
   } finally {
@@ -2310,10 +3440,6 @@ async function exportPackage() {
   }
 }
 
-/**
- * Open or close the shortcuts card.
- * @param {boolean} [open] True opens, false closes, and no value flips the card.
- */
 /** The species guide: reference photos and the ID guide text, served from /guide/. */
 const guide = { data: null, code: null, error: '', loading: null };
 
@@ -2365,6 +3491,23 @@ function showGuide(code, open = true) {
 }
 
 /**
+ * Show the species the wheel lights in the guide, when the guide is open. The guide never
+ * opens by itself; it follows the pointer or Tab only while it is already on screen.
+ * @param {?string} code The lit species, or null when nothing is lit.
+ */
+function followGuide(code) {
+  window.clearTimeout(runtime.guideFollowTimer);
+  if (!code || dom.guide.hidden) {
+    return;
+  }
+  runtime.guideFollowTimer = window.setTimeout(() => {
+    if (!dom.guide.hidden) {
+      showGuide(code, false);
+    }
+  }, GUIDE_FOLLOW_MS);
+}
+
+/**
  * Open or close the guide.
  * @param {boolean} [open] The wanted state; omitted means toggle.
  */
@@ -2374,8 +3517,7 @@ function toggleGuide(open) {
   dom.guideToggle.setAttribute('aria-expanded', show ? 'true' : 'false');
   if (show) {
     if (!guide.code) {
-      const pending = state.pending && state.pending.species;
-      guide.code = pending || state.pins[PIN_KEYS[0]] || (state.species[0] && state.species[0].code) || null;
+      guide.code = state.pins[PIN_KEYS[0]] || (state.species[0] && state.species[0].code) || null;
     }
     loadGuide();
     renderGuide();
@@ -2443,10 +3585,13 @@ function enlargeGuideImage(src, name) {
     el('img', { attrs: { src, alt: name } }),
   ]);
   large.addEventListener('click', closeGuideLarge);
-  document.body.append(large);
+  dom.theater.append(large);
 }
 
-/** Remove the enlarged guide photo, if one is showing. */
+/**
+ * Remove the enlarged guide photo, if one is showing.
+ * @returns {boolean} True when a photo was showing and is gone now.
+ */
 function closeGuideLarge() {
   const large = document.getElementById('guide-large');
   if (large) {
@@ -2456,10 +3601,58 @@ function closeGuideLarge() {
   return false;
 }
 
+/**
+ * Open or close the shortcuts card.
+ * @param {boolean} [open] True opens, false closes, and no value flips the card.
+ */
 function toggleHelp(open) {
   const show = open === undefined ? dom.help.hidden : open;
   dom.help.hidden = !show;
   dom.helpToggle.setAttribute('aria-expanded', String(show));
+}
+
+// ---------------------------------------------------------------- full screen
+
+/**
+ * Fill the screen with the theater (the video, the marks, the wheel, and the transport
+ * row), or leave full screen.
+ */
+function toggleFullscreen() {
+  if (document.fullscreenElement) {
+    document.exitFullscreen().catch(() => {
+      // Chrome refuses only when nothing is in full screen, which is the wanted state.
+    });
+    return;
+  }
+  dom.theater.requestFullscreen().catch((error) => {
+    toast(`Full screen did not start. ${endSentence(error.message)}`, 'error');
+  });
+}
+
+/**
+ * Follow the full-screen state: the button, the Escape key lock, the overlay, and an open
+ * wheel, which moves back onto its mark inside the new view.
+ */
+function onFullscreenChange() {
+  const on = document.fullscreenElement === dom.theater;
+  state.fullscreen = on;
+  document.body.dataset.fullscreen = String(on);
+  dom.fullscreenIcon.setAttribute('href', on ? '#i-collapse' : '#i-expand');
+  dom.fullscreen.setAttribute('aria-label', on ? 'Leave full screen' : 'Full screen');
+  const keyboard = navigator.keyboard;
+  if (keyboard && typeof keyboard.lock === 'function') {
+    if (on) {
+      // With Escape locked, Escape reaches the page and cancels the wheel; a long press
+      // still leaves full screen.
+      keyboard.lock(['Escape']).catch(() => {
+        // Without the lock, Escape leaves full screen at once, which still works.
+      });
+    } else {
+      keyboard.unlock();
+    }
+  }
+  drawOverlay();
+  relayoutWheel();
 }
 
 // ------------------------------------------------------------------- keyboard
@@ -2483,6 +3676,10 @@ function onKeyDown(event) {
     return;
   }
   const key = keyFromEvent(event.key, event.code, event.shiftKey);
+  if (key !== 'Backspace' && key !== 'Delete') {
+    // Any other key disarms a deletion that waits for its second press.
+    wheel.disarmDelete();
+  }
   if (key === 'Escape' && closeGuideLarge()) {
     event.preventDefault();
     return;
@@ -2525,9 +3722,11 @@ function onTextFieldKey(event, key) {
       event.preventDefault();
       return;
     }
-    const slot = pinKeyFromEvent(key, event.code);
+    const slot = pinKeyFromEvent(key, event.code, event.shiftKey);
     if (marking && slot) {
-      choosePinned(slot);
+      if (!event.repeat) {
+        choosePinned(slot, event.shiftKey);
+      }
       event.preventDefault();
       return;
     }
@@ -2545,7 +3744,8 @@ function onTextFieldKey(event, key) {
 }
 
 /**
- * Handle Enter inside a text field.
+ * Handle Enter inside a text field. In the filter box it chooses the highlighted match;
+ * in the note box it returns the keyboard to the wheel and never saves.
  * @param {HTMLInputElement} field The field that holds the keyboard.
  * @param {boolean} shift True when Shift is down.
  * @param {boolean} repeat True when the key repeats because it is held down.
@@ -2556,9 +3756,9 @@ function onTextFieldEnter(field, shift, repeat) {
     const code = state.matches[state.matchIndex];
     if (!code) {
       toast(`No species matches "${state.filterQuery.trim()}".`, 'error', TOAST_MS);
-    } else if (marking) {
-      chooseSpecies(code);
-    } else {
+    } else if (marking && !repeat) {
+      pickSpecies(code, shift);
+    } else if (!marking) {
       armPin(code);
     }
     return;
@@ -2567,22 +3767,22 @@ function onTextFieldEnter(field, shift, repeat) {
     openFirstSearchResult();
     return;
   }
-  if (field === dom.annotator) {
-    field.blur();
-    return;
-  }
-  if (marking && !repeat) {
-    savePending(shift);
-  }
+  field.blur();
 }
 
 /**
- * Handle Escape inside a text field: cancel the mark in marking mode, otherwise leave the field.
+ * Handle Escape inside a text field: in marking mode the note box returns the keyboard to
+ * the wheel and the filter box cancels the mark; otherwise the field empties or resets and
+ * lets go of the keyboard.
  * @param {HTMLInputElement} field The field that holds the keyboard.
  */
 function onTextFieldEscape(field) {
   if (state.mode === 'marking') {
-    cancelMark();
+    if (field === dom.note) {
+      field.blur();
+    } else {
+      cancelMark();
+    }
     return;
   }
   if (field === dom.filter) {
@@ -2600,20 +3800,32 @@ function onTextFieldEscape(field) {
 }
 
 /**
- * Handle a key in marking mode, outside the text fields.
+ * Handle a key while the wheel is open, outside the text fields.
  * @param {KeyboardEvent} event The keydown.
  * @param {string} key The key value from keyFromEvent.
  * @returns {boolean} True when the key was used, so the browser default is blocked.
  */
 function onMarkingKey(event, key) {
-  const slot = pinKeyFromEvent(key, event.code);
+  const slot = pinKeyFromEvent(key, event.code, event.shiftKey);
   if (slot) {
-    choosePinned(slot);
+    if (!event.repeat) {
+      choosePinned(slot, event.shiftKey);
+    }
     return true;
   }
+  const open = wheel.snapshot();
+  const query = open ? open.query : '';
   if (key === 'Enter') {
     if (!event.repeat) {
-      savePending(event.shiftKey);
+      wheel.pickHighlighted(event.shiftKey);
+    }
+    return true;
+  }
+  if (key === ' ') {
+    if (spaceAction(query) === 'query') {
+      wheel.setQuery(`${query} `);
+    } else if (!event.repeat) {
+      pickHub(event.shiftKey);
     }
     return true;
   }
@@ -2621,15 +3833,26 @@ function onMarkingKey(event, key) {
     cancelMark();
     return true;
   }
-  if (key === 'Tab' && !event.shiftKey) {
-    dom.note.focus();
+  if (key === 'Tab') {
+    // Tab and Shift+Tab walk the highlight around the wheel; an open guide follows it.
+    wheel.moveHighlight(event.shiftKey ? -1 : 1);
     return true;
   }
-  if (key === ',' || key === '.') {
-    stepFrame(key === '.' ? 1 : -1);
+  if (key === ',' || key === '.' || key === 'ArrowLeft' || key === 'ArrowRight') {
+    stepFrame(key === '.' || key === 'ArrowRight' ? 1 : -1);
     return true;
   }
-  if (key === ' ' || key === 'ArrowUp' || key === 'ArrowDown') {
+  if (key === 'ArrowUp' || key === 'ArrowDown') {
+    const step = key === 'ArrowDown' ? 1 : -1;
+    if (query.trim() !== '') {
+      wheel.moveHighlight(step);
+    } else {
+      wheel.spin(step);
+    }
+    return true;
+  }
+  if (key === 'Backspace' || key === 'Delete') {
+    onDeleteKey(open ? open.mode : 'new', query, event.repeat);
     return true;
   }
   if (key === '?') {
@@ -2637,10 +3860,67 @@ function onMarkingKey(event, key) {
     return true;
   }
   if (/^[a-z]$/i.test(key)) {
-    typeIntoFilter(key);
+    wheel.setQuery(query + key.toLowerCase());
     return true;
   }
   return false;
+}
+
+/**
+ * Handle Backspace or Delete in the wheel. A typed query loses its last letter. In the wheel
+ * of a saved mark without a query, the first press arms deleting the row and a second press
+ * within DELETE_ARM_MS deletes it; a held key's repeats neither arm nor delete, a press within
+ * QUERY_EDIT_GUARD_MS of clearing the query does not arm, and a press within
+ * DELETE_CONFIRM_MIN_MS of arming does not delete.
+ * @param {string} mode The wheel's mode, "new" or "edit".
+ * @param {string} query The typed query.
+ * @param {boolean} repeat True when the key repeats because it is held down.
+ */
+function onDeleteKey(mode, query, repeat) {
+  const action = deleteKeyAction(mode, query);
+  const now = performance.now();
+  if (action === 'query') {
+    wheel.setQuery(query.slice(0, -1));
+    runtime.queryEditedAt = now;
+  } else if (action === 'arm' && !repeat) {
+    // Taps that just cleared a filter cannot arm, and a second tap right after arming cannot
+    // delete, so a burst of Backspace never removes a sighting.
+    const decision = deleteKeyTiming(now, runtime.queryEditedAt, wheel.deleteArmed() ? runtime.deleteArmedAt : null);
+    if (decision === 'delete') {
+      deleteFromWheel();
+    } else if (decision === 'arm') {
+      wheel.armDelete(DELETE_ARM_MS);
+      runtime.deleteArmedAt = now;
+    }
+  }
+}
+
+/**
+ * Delete the row of the open edit wheel, on the second press of Backspace or Delete. The
+ * wheel closes, the video stays paused, and the server moves the row's images and its track
+ * to the trash.
+ * @returns {Promise<void>} Settles after the server removed or refused the row.
+ */
+async function deleteFromWheel() {
+  const pending = state.pending;
+  if (!pending || pending.mode !== 'edit' || pending.picked) {
+    return;
+  }
+  pending.picked = true;
+  const label = rowLabel(pending.rowId, pending.code);
+  endMark();
+  await deleteSighting(pending.rowId, `Deleted ${label}`);
+}
+
+/**
+ * End a held arrow key's rewind or fast-forward when the key comes up.
+ * @param {KeyboardEvent} event The keyup.
+ */
+function onKeyUp(event) {
+  if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight') && scrubber.active()) {
+    scrubber.stop();
+    event.preventDefault();
+  }
 }
 
 /**
@@ -2659,7 +3939,10 @@ function onScreeningKey(event, key) {
     return true;
   }
   if (key === 'ArrowLeft' || key === 'ArrowRight') {
-    seekTo(dom.video.currentTime + (key === 'ArrowRight' ? JUMP_SECONDS : -JUMP_SECONDS));
+    // Holding the key rewinds or fast-forwards; onKeyUp ends it. Key repeats are ignored.
+    if (!event.repeat && isVideoReady()) {
+      scrubber.start(key === 'ArrowRight' ? 1 : -1);
+    }
     return true;
   }
   if (key === ',' || key === '.') {
@@ -2678,7 +3961,7 @@ function onScreeningKey(event, key) {
     toggleHelp();
     return true;
   }
-  if (pinKeyFromEvent(key, event.code)) {
+  if (pinKeyFromEvent(key, event.code, event.shiftKey)) {
     if (state.key && !event.repeat) {
       toast('Click a sponge in the video first. Then press its species key.', 'info');
     }
@@ -2686,7 +3969,7 @@ function onScreeningKey(event, key) {
   }
   const letter = key.length === 1 ? key.toLowerCase() : '';
   if (event.repeat) {
-    return letter === 'g' || letter === 'z' || letter === 'd' || letter === 'n' || letter === 'i';
+    return ['g', 'z', 'd', 'n', 'i', 'f', 'p'].includes(letter);
   }
   if (letter === 'g') {
     setGrid(!state.grid);
@@ -2708,14 +3991,38 @@ function onScreeningKey(event, key) {
     toggleGuide();
     return true;
   }
+  if (letter === 'f') {
+    toggleFullscreen();
+    return true;
+  }
+  if (letter === 'p') {
+    setDeck(!state.deckShown);
+    return true;
+  }
   return false;
 }
 
 // -------------------------------------------------------------------- startup
 
+/**
+ * Drop the mark when a mousedown lands outside the wheel, the picture, and the controls
+ * that work with an open mark. The video stays paused.
+ * @param {MouseEvent} event The mousedown, caught on its way down to its target.
+ */
+function onMouseDownOutside(event) {
+  if (state.mode === 'marking' && event.target instanceof Element && !event.target.closest(MARKING_ZONES)) {
+    dropMark();
+  }
+}
+
 /** Attach every event listener of the page. */
 function wireEvents() {
   document.addEventListener('keydown', onKeyDown);
+  document.addEventListener('keyup', onKeyUp);
+  window.addEventListener('blur', () => scrubber.stop());
+  document.addEventListener('mousedown', onMouseDownOutside, true);
+  document.addEventListener('fullscreenchange', onFullscreenChange);
+  window.addEventListener('resize', relayoutWheel);
   document.addEventListener('click', (event) => {
     const button = event.target.closest('button');
     if (button && event.detail > 0) {
@@ -2724,6 +4031,7 @@ function wireEvents() {
   });
   window.addEventListener('blur', abandonDrag);
   window.addEventListener('pagehide', savePosition);
+  window.addEventListener('beforeunload', onBeforeUnload);
 
   dom.breadcrumb.addEventListener('click', onFolderClick);
   dom.folders.addEventListener('click', onFolderClick);
@@ -2736,14 +4044,21 @@ function wireEvents() {
   dom.catalogRetry.addEventListener('click', () => loadCatalog(runtime.failedPrefix, runtime.failedRefresh));
 
   dom.overlay.addEventListener('mousedown', onStageMouseDown);
+  dom.overlay.addEventListener('contextmenu', onStageContextMenu);
   dom.stageAction.addEventListener('click', () => {
     if (runtime.statusAction) {
       runtime.statusAction.run();
     }
   });
-  new ResizeObserver(drawOverlay).observe(dom.stage);
+  new ResizeObserver(() => {
+    drawOverlay();
+    relayoutWheel();
+  }).observe(dom.stage);
 
   dom.video.addEventListener('loadedmetadata', onLoadedMetadata);
+  dom.video.addEventListener('loadedmetadata', watchFrames);
+  dom.video.addEventListener('emptied', stopWatchingFrames);
+  dom.video.addEventListener('seeking', forgetPresentedFrame);
   dom.video.addEventListener('timeupdate', onTimeUpdate);
   dom.video.addEventListener('seeked', onTimeUpdate);
   dom.video.addEventListener('ended', onEnded);
@@ -2779,6 +4094,8 @@ function wireEvents() {
   dom.grid.addEventListener('click', () => setGrid(!state.grid));
   dom.done.addEventListener('click', toggleDone);
   dom.next.addEventListener('click', openNextVideo);
+  dom.fullscreen.addEventListener('click', toggleFullscreen);
+  dom.deckToggle.addEventListener('click', () => setDeck(!state.deckShown));
 
   dom.pins.addEventListener('click', onPinsClick);
   dom.pins.addEventListener('mousedown', keepFilterFocus);
@@ -2798,17 +4115,17 @@ function wireEvents() {
   });
   dom.speciesRetry.addEventListener('click', loadSpecies);
 
-  dom.save.addEventListener('click', () => savePending(false));
-  dom.saveStay.addEventListener('click', () => savePending(true));
   dom.cancel.addEventListener('click', cancelMark);
 
   dom.sightings.addEventListener('click', onSightingsClick);
+  dom.toLabel.addEventListener('click', onToLabelClick);
   dom.annotator.addEventListener('change', saveAnnotator);
   dom.exportButton.addEventListener('click', exportPackage);
   dom.helpToggle.addEventListener('click', () => toggleHelp());
   dom.helpClose.addEventListener('click', () => toggleHelp(false));
   dom.guideToggle.addEventListener('click', () => toggleGuide());
   dom.guideClose.addEventListener('click', () => toggleGuide(false));
+  dom.guideDock.addEventListener('click', () => setGuideDock(!state.guideDocked));
   dom.guideSpecies.addEventListener('change', () => showGuide(dom.guideSpecies.value));
 }
 
@@ -2828,13 +4145,15 @@ function restorePreferences() {
   state.grid = storageGet(STORAGE.grid) !== '0';
   dom.grid.setAttribute('aria-pressed', String(state.grid));
   const speed = Number(storageGet(STORAGE.speed));
-  setSpeed(SPEEDS.includes(speed) ? speed : 1);
+  setSpeed(SPEEDS.includes(speed) ? speed : DEFAULT_SPEED);
+  setDeck(storageGet(STORAGE.deck) === '1');
+  setGuideDock(storageGet(STORAGE.guideDock) !== '0');
 }
 
 /**
- * Start the page: wire the events, then load the species, the tally, and the folder
- * that was open last time.
- * @returns {Promise<void>} Settles after the three first requests returned.
+ * Start the page: wire the events, then load the species, the tally, the To label list,
+ * and the folder that was open last time.
+ * @returns {Promise<void>} Settles after the first requests returned.
  */
 async function start() {
   wireEvents();
@@ -2844,6 +4163,7 @@ async function start() {
   renderPins();
   renderMarkBar();
   renderSightings();
+  renderToLabel();
   renderDone();
   renderTransport();
 
@@ -2852,11 +4172,21 @@ async function start() {
   await Promise.all([
     loadSpecies(),
     refreshTally(),
+    refreshToLabel(),
     loadCatalog(first).then(() => (
       state.catalogError && first !== ROOT_PREFIX ? loadCatalog(ROOT_PREFIX) : undefined
     )),
   ]);
 }
 
-window.__screener = { state, pictureRect: pictureRectInViewport };
+const scrubber = createScrubber(dom.video);
+
+const wheel = createWheel(dom.wheelLayer, {
+  onPick: (code, choice) => pickSpecies(code, choice.shift),
+  onHubPick: (choice) => pickHub(choice.shift),
+  onCancel: cancelMark,
+  onHighlight: followGuide,
+});
+
+window.__screener = { state, pictureRect: pictureRectInViewport, wheel: () => wheel.snapshot(), drawn: drawnInViewport };
 start();

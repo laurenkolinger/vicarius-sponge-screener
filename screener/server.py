@@ -1,7 +1,7 @@
 """The HTTP server of Sponge Screener: routes, request rules, and the app behind them.
 
-ScreenerApp wires the data layer, the catalog, the relay, and the converter
-together and offers one method per route. The request handler turns HTTP into
+ScreenerApp wires the data layer, the catalog, the relay, the converter, and
+the tracker together and offers one method per route. The request handler turns HTTP into
 those method calls: it checks the Host header, the mutation header, and the
 body, maps every module error to a status code, streams video ranges, and
 logs one line per request to stderr. make_server binds the ThreadingHTTPServer
@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
-from screener.config import KEY_PREFIX, MAX_BODY_BYTES, PLAYABLE_EXTENSIONS, TALLY_TARGET, VERSION
+from screener.config import KEY_PREFIX, MAX_BODY_BYTES, PLAYABLE_EXTENSIONS, TALLY_TARGET, TRACK_PYTHON, TRACK_WORKER, VERSION
 from screener.convert import Converter, ConvertError, ConvertStatus
 from screener.export import ExportError, export_package
 from screener.keys import extension_of, quote_key
@@ -36,6 +36,7 @@ from screener.s3catalog import CatalogError, S3Catalog
 from screener.settings import Settings, load_settings, save_settings, validate_annotator
 from screener.species import PIN_KEYS, Species, load_species, validate_pins
 from screener.store import ID_PATTERN, ObservationStore, StoreError, UnknownObservation
+from screener.tracking import Tracker
 
 # Files inside the config, data, and cache folders.
 SPECIES_FILE = "species.csv"
@@ -57,7 +58,7 @@ GUIDE_MANIFEST = "guide.json"
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost")
 MUTATION_HEADER = "X-Screener"
 MUTATION_VALUE = "1"
-MUTATING_METHODS = ("POST", "DELETE")
+MUTATING_METHODS = ("POST", "PATCH", "DELETE")
 MEDIA_NAME = re.compile(r"[A-Za-z0-9_.-]+")
 FORBIDDEN_SEGMENTS = ("", ".", "..")
 FORBIDDEN_PATH_CHARACTERS = ("\\", "\x00")
@@ -223,20 +224,38 @@ def _count_csv_rows(path: Path) -> int:
         return sum(1 for cells in csv.reader(handle) if cells) - 1
 
 
+def _checked_obs_id(obs_id: str) -> str:
+    """Check the sighting ID from a route.
+
+    Args:
+        obs_id: The text after ``/api/observations/``.
+
+    Returns:
+        The ID unchanged.
+
+    Raises:
+        ValueError: Starting with ``obs_id:`` when the ID is not ``ID`` plus digits.
+    """
+    if not ID_PATTERN.fullmatch(obs_id):
+        raise ValueError(f"obs_id: expected ID followed by digits, such as ID007, got {obs_id!r}")
+    return obs_id
+
+
 class ScreenerApp:
-    """Everything behind the routes: the store, the settings, the catalog, the relay, the converter.
+    """Everything behind the routes: the store, the settings, the catalog, the relay, the converter, the tracker.
 
     One app serves every handler thread. The store, the catalog, the relay,
-    and the converter guard their own state; the settings are guarded here.
+    the converter, and the tracker guard their own state; the settings are
+    guarded here.
 
     Attributes:
         data_dir: The folder with observations.csv, videos_screened.csv,
-            frames/, crops/, trash/, .lock, and settings.json.
+            frames/, crops/, tracks/, trash/, .lock, and settings.json.
         cache_dir: The folder with chunks/, converted/, and catalog.json.
         static_dir: The folder with the page and its files.
-        port: The port the converter's source URLs use. make_server replaces
-            it with the port it bound, so 0 works.
-        store, catalog, relay, converter: The modules behind the routes.
+        port: The port the converter's and the tracker's source URLs use.
+            make_server replaces it with the port it bound, so 0 works.
+        store, catalog, relay, converter, tracker: The modules behind the routes.
     """
 
     def __init__(
@@ -247,8 +266,10 @@ class ScreenerApp:
         static_dir: Path,
         bucket_url: str,
         port: int,
+        track_python: Path = TRACK_PYTHON,
+        track_worker: Path = TRACK_WORKER,
     ) -> None:
-        """Load the configuration and the settings, and start the relay and the converter.
+        """Load the configuration and the settings, and start the relay, the converter, and the tracker.
 
         Args:
             data_dir: The data folder. It is created when missing.
@@ -257,6 +278,10 @@ class ScreenerApp:
             static_dir: The existing folder with index.html and its files.
             bucket_url: The bucket's base URL, http or https.
             port: The server port, 0 to 65535. 0 means make_server chooses.
+            track_python: The Python of .venv-track, which runs the tracking
+                worker. When it is missing, tracking is off and the page draws
+                its marks where they were clicked.
+            track_worker: screener/track_worker.py.
 
         Raises:
             ValueError: Starting with the argument name when an argument has
@@ -274,6 +299,9 @@ class ScreenerApp:
             raise ValueError(f"bucket_url: expected an http or https URL, got {bucket_url!r}")
         if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
             raise ValueError(f"port: expected a whole number from 0 to 65535, got {port!r}")
+        for name, value in (("track_python", track_python), ("track_worker", track_worker)):
+            if not isinstance(value, os.PathLike):
+                raise ValueError(f"{name}: expected a path, got {type(value).__name__}")
         self.data_dir = Path(data_dir)
         self.cache_dir = Path(cache_dir)
         self.static_dir = Path(static_dir).resolve()
@@ -291,6 +319,7 @@ class ScreenerApp:
         except BaseException:
             self.relay.close()
             raise
+        self.tracker = Tracker(track_python, track_worker, source_for=self._track_source, save_track=self.store.tracks.save)
         self._closed = False
 
     def _source_for(self, key: str) -> str:
@@ -304,11 +333,29 @@ class ScreenerApp:
         """
         return f"http://{LOOPBACK_HOSTS[0]}:{self.port}/video?key={quote_key(key)}"
 
+    def _track_source(self, key: str) -> str:
+        """Return what the tracking worker reads a key from.
+
+        Args:
+            key: A validated key.
+
+        Returns:
+            The converted copy when one exists, because the page plays that
+            file and its times are the times of the sightings; otherwise the
+            local relay URL.
+        """
+        converted = self.converter.converted_path(key)
+        return str(converted) if converted is not None else self._source_for(key)
+
     def close(self) -> None:
-        """Stop the converter and the relay. A second call does nothing."""
+        """Stop the tracker, the converter, and the relay. A second call does nothing.
+
+        The tracker stops first, because its worker reads through the relay.
+        """
         if self._closed:
             return
         self._closed = True
+        self.tracker.close()
         self.converter.close()
         self.relay.close()
 
@@ -378,7 +425,8 @@ class ScreenerApp:
             refresh: True asks the bucket again even when a young listing is saved.
 
         Returns:
-            The ``/api/catalog`` answer.
+            The ``/api/catalog`` answer. Each video carries ``sightings`` (labeled
+            rows) and ``unlabeled`` (Later points).
 
         Raises:
             InvalidKey: When the prefix breaks the key rules.
@@ -389,7 +437,7 @@ class ScreenerApp:
         status = self.store.video_status()
         videos = []
         for entry in page.videos:
-            known = status.get(entry.key, {"status": "new", "sightings": 0})
+            known = status.get(entry.key, {"status": "new", "sightings": 0, "unlabeled": 0})
             videos.append(
                 {
                     "key": entry.key,
@@ -399,6 +447,7 @@ class ScreenerApp:
                     "playable": entry.playable,
                     "status": known["status"],
                     "sightings": known["sightings"],
+                    "unlabeled": known["unlabeled"],
                     "converted": self.converter.status(entry.key).state,
                 }
             )
@@ -412,32 +461,39 @@ class ScreenerApp:
 
     # ----- observations -----
 
-    def observation_rows(self, key: str) -> Dict[str, Any]:
-        """Return the sightings of one video.
+    def observation_rows(self, key: Optional[str], status: Optional[str]) -> Dict[str, Any]:
+        """Return the sightings of one video, the sightings with one label status, or both filters.
 
         Args:
-            key: The video's key.
+            key: The video's key, or None for every video.
+            status: ``labeled`` or ``unlabeled``, or None for both.
 
         Returns:
-            ``{"rows": [...]}``.
+            ``{"rows": [...]}`` in file order.
 
         Raises:
+            ValueError: ``key: missing`` when both arguments are None, and
+                starting with ``status:`` when the status is neither value.
             InvalidKey: When the key breaks the key rules.
             StoreError: When observations.csv cannot be parsed.
         """
-        return {"rows": self.store.rows(key)}
+        if key is None and status is None:
+            raise ValueError("key: missing")
+        return {"rows": self.store.rows(key, status)}
 
     def save_observation(self, fields: Any) -> Dict[str, Any]:
-        """Save one sighting posted by the page.
+        """Save one sighting posted by the page, and queue its tracking job.
 
         Args:
             fields: A JSON object with key, time, point, box (null or an
-                object; absent counts as null), species, note (absent counts
-                as empty), frame_jpeg, and crop_png (base64 text, a data URL
-                prefix is accepted).
+                object; absent counts as null), species (a code, or null to
+                save a Later point), note (absent counts as empty),
+                frame_jpeg, and crop_png (base64 text, a data URL prefix is
+                accepted).
 
         Returns:
-            ``{"row": <the saved row>}``.
+            ``{"row": <the saved row>, "reopened": <True when a Later point
+            moved a done video back to in progress>}``.
 
         Raises:
             ValueError: Starting with the name of the bad field. Nothing is written.
@@ -464,10 +520,45 @@ class ScreenerApp:
             )
         except ValueError as error:
             raise ValueError(_rename_field(str(error))) from error
-        return {"row": row}
+        self.tracker.add(row)
+        return {"row": dict(row), "reopened": row.reopened}
+
+    def relabel_observation(self, obs_id: str, fields: Any) -> Dict[str, Any]:
+        """Give a sighting another species, or none, and rename its images.
+
+        Args:
+            obs_id: The ID from the route, such as ``ID007``.
+            fields: A JSON object with ``species``: a code, or null to make
+                the sighting a Later point.
+
+        Returns:
+            ``{"row": <the row after the change>, "reopened": <True when
+            unlabeling moved a done video back to in progress>}``.
+
+        Raises:
+            ValueError: Starting with ``obs_id``, ``body``, or ``species`` when
+                the ID is not ``ID`` plus digits, the body is not an object,
+                species is missing, species is neither text nor null, or the
+                code is not in the species list. Nothing changes.
+            UnknownObservation: When no sighting has the ID.
+            StoreError: When the store cannot rename the images or write the row.
+        """
+        _checked_obs_id(obs_id)
+        if not isinstance(fields, Mapping):
+            raise ValueError(f"body: expected a JSON object, got {type(fields).__name__}")
+        if "species" not in fields:
+            raise ValueError("species: missing")
+        species = fields["species"]
+        if species is not None and not isinstance(species, str):
+            raise ValueError(f"species: expected a species code or null, got {type(species).__name__}")
+        try:
+            row = self.store.set_label(obs_id, species)
+        except ValueError as error:
+            raise ValueError(_rename_field(str(error))) from error
+        return {"row": dict(row), "reopened": row.reopened}
 
     def delete_observation(self, obs_id: str) -> Dict[str, Any]:
-        """Remove one sighting and move its images to the trash.
+        """Remove one sighting, move its images and its track to the trash, and drop its tracking job.
 
         Args:
             obs_id: The ID from the route, such as ``ID007``.
@@ -480,21 +571,54 @@ class ScreenerApp:
             UnknownObservation: When no sighting has the ID.
             StoreError: When the store cannot remove the sighting.
         """
-        if not ID_PATTERN.fullmatch(obs_id):
-            raise ValueError(f"obs_id: expected ID followed by digits, such as ID007, got {obs_id!r}")
-        return {"deleted": self.store.delete(obs_id)}
+        checked = _checked_obs_id(obs_id)
+        try:
+            return {"deleted": self.store.delete(checked)}
+        finally:
+            # A delete that fails partway may already have removed the row. A
+            # sighting that stays has no track yet, so the page's next request
+            # queues it again.
+            self.tracker.cancel(checked)
 
     def tally_payload(self) -> Dict[str, Any]:
-        """Count the sightings per species across all videos.
+        """Count the labeled sightings per species across all videos, and the Later points.
 
         Returns:
-            ``{"tally": [...], "total": <sightings in all rows>}``.
+            ``{"tally": [...], "total": <labeled sightings>, "unlabeled": <Later points>}``.
 
         Raises:
             StoreError: When observations.csv cannot be parsed.
         """
-        tally = self.store.tally()
-        return {"tally": tally, "total": sum(item["sightings"] for item in tally)}
+        tally, unlabeled = self.store.tally_and_unlabeled()
+        return {"tally": tally, "total": sum(item["sightings"] for item in tally), "unlabeled": unlabeled}
+
+    def tracks_payload(self, key: Any) -> Dict[str, Any]:
+        """Lay out the tracks of the sightings of one video, and queue the sightings without one.
+
+        Args:
+            key: The video's key.
+
+        Returns:
+            ``{"tracks": {<ID>: {"points", "box", "anchor_time", "updated_at"}},
+            "pending": [<ID>, ...]}``. tracks holds the sightings of that video
+            that have a track, Later points included, in file order; a track
+            file that cannot be read is left out and named on stderr. pending
+            lists the sightings whose tracks are still being made, the one
+            running first, so the page knows to ask again; it is empty when
+            tracking is off.
+
+        Raises:
+            ValueError: ``key: missing`` when the key is None, because the
+                store would then answer the rows of every video.
+            InvalidKey: When the key breaks the key rules.
+            StoreError: When observations.csv cannot be parsed.
+        """
+        if key is None:
+            raise ValueError("key: missing")
+        rows = self.store.rows(key)
+        tracks = self.store.tracks.for_ids([row["ID"] for row in rows])
+        missing = [row for row in rows if row["ID"] not in tracks]
+        return {"tracks": tracks, "pending": self.tracker.request(key, missing)}
 
     # ----- screened videos -----
 
@@ -527,7 +651,8 @@ class ScreenerApp:
             ``{"video": <the videos_screened.csv row>}``.
 
         Raises:
-            ValueError: Starting with the name of the bad argument.
+            ValueError: Starting with the name of the bad argument, and with
+                ``done:`` when done is True and the video holds Later points.
             StoreError: When a CSV file cannot be parsed or written.
         """
         current = self.settings()
@@ -578,14 +703,19 @@ class ScreenerApp:
         """Write the dated export package into the export folder from the settings.
 
         Returns:
-            ``{"path": <package folder>, "observations": <rows exported>}``.
+            ``{"path": <package folder>, "observations": <rows exported>,
+            "unlabeled_left_out": <Later points the package leaves out>}``.
 
         Raises:
-            ExportError: When the export folder is missing, the store is
-                empty, an image is missing, or a file cannot be written.
+            ExportError: When the export folder is missing, the store has no
+                labeled sighting, an image is missing, or a file cannot be written.
         """
-        package = export_package(self.store, Path(self.settings().export_root), date.today())
-        return {"path": str(package), "observations": _count_csv_rows(package / self.store.observations_path.name)}
+        result = export_package(self.store, Path(self.settings().export_root), date.today())
+        return {
+            "path": str(result.path),
+            "observations": _count_csv_rows(result.path / self.store.observations_path.name),
+            "unlabeled_left_out": result.unlabeled_left_out,
+        }
 
 
 class _ScreenerServer(ThreadingHTTPServer):
@@ -615,8 +745,8 @@ class _ScreenerServer(ThreadingHTTPServer):
 class _Handler(BaseHTTPRequestHandler):
     """Answers one connection's requests from the ScreenerApp of its server.
 
-    Every request passes the Host check, then (for POST and DELETE) the
-    mutation header check, then the route table. Route methods raise
+    Every request passes the Host check, then (for POST, PATCH, and DELETE)
+    the mutation header check, then the route table. Route methods raise
     HttpError for an answer with an error status, and module errors are
     mapped to statuses in one place (_dispatch). One log line per request
     goes to stderr when the request ends.
@@ -640,6 +770,7 @@ class _Handler(BaseHTTPRequestHandler):
         "/api/settings": {"POST": "_post_settings"},
         "/api/observations": {"GET": "_get_observations", "POST": "_post_observation"},
         "/api/tally": {"GET": "_get_tally"},
+        "/api/tracks": {"GET": "_get_tracks"},
         "/api/videos/open": {"POST": "_post_open"},
         "/api/videos/done": {"POST": "_post_done"},
         "/api/convert": {"GET": "_get_convert", "POST": "_post_convert"},
@@ -651,7 +782,7 @@ class _Handler(BaseHTTPRequestHandler):
         (STATIC_ROUTE, {"GET": "_get_static"}),
         (MEDIA_ROUTE, {"GET": "_get_media"}),
         (GUIDE_ROUTE, {"GET": "_get_guide"}),
-        (OBSERVATION_ROUTE, {"DELETE": "_delete_observation"}),
+        (OBSERVATION_ROUTE, {"DELETE": "_delete_observation", "PATCH": "_patch_observation"}),
     )
 
     # ----- entry points called by the base class -----
@@ -662,6 +793,10 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         """Serve a POST request."""
+        self._serve()
+
+    def do_PATCH(self) -> None:  # noqa: N802
+        """Serve a PATCH request."""
         self._serve()
 
     def do_DELETE(self) -> None:  # noqa: N802
@@ -772,7 +907,7 @@ class _Handler(BaseHTTPRequestHandler):
             raise HttpError(HTTP_FORBIDDEN, f"Host: {host!r} is not this server; expected {' or '.join(allowed)}")
 
     def _check_mutation_header(self) -> None:
-        """Refuse a POST or DELETE without the page's header.
+        """Refuse a POST, PATCH, or DELETE without the page's header.
 
         Raises:
             HttpError: 403 when ``X-Screener: 1`` is missing.
@@ -1152,12 +1287,20 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(HTTP_OK, payload)
 
     def _get_observations(self, rest: str, query: Dict[str, List[str]]) -> None:
-        """List the sightings of one video."""
-        self._send_json(HTTP_OK, self.server.app.observation_rows(self._required_query(query, "key")))
+        """List the sightings of one video, the Later points of all videos, or both filters together."""
+        key = self._query_value(query, "key")
+        status = self._query_value(query, "status")
+        self._send_json(HTTP_OK, self.server.app.observation_rows(key, status))
 
     def _post_observation(self, rest: str, query: Dict[str, List[str]]) -> None:
         """Save one sighting."""
         self._send_json(HTTP_CREATED, self.server.app.save_observation(self._object_body()))
+
+    def _patch_observation(self, rest: str, query: Dict[str, List[str]]) -> None:
+        """Relabel or unlabel one sighting by the ID in the path."""
+        if not rest or "/" in rest:
+            raise HttpError(HTTP_NOT_FOUND, f"route: no route for PATCH {OBSERVATION_ROUTE}{rest}")
+        self._send_json(HTTP_OK, self.server.app.relabel_observation(rest, self._object_body()))
 
     def _delete_observation(self, rest: str, query: Dict[str, List[str]]) -> None:
         """Remove one sighting by the ID in the path."""
@@ -1168,6 +1311,10 @@ class _Handler(BaseHTTPRequestHandler):
     def _get_tally(self, rest: str, query: Dict[str, List[str]]) -> None:
         """Answer the species tally."""
         self._send_json(HTTP_OK, self.server.app.tally_payload())
+
+    def _get_tracks(self, rest: str, query: Dict[str, List[str]]) -> None:
+        """Answer the tracks of the sightings of one video."""
+        self._send_json(HTTP_OK, self.server.app.tracks_payload(self._required_query(query, "key")))
 
     def _post_open(self, rest: str, query: Dict[str, List[str]]) -> None:
         """Record that a video was opened."""

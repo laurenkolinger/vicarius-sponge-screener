@@ -7,7 +7,7 @@ an unexplained literal.
 import os
 from pathlib import Path
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 APP_ROOT = Path(__file__).resolve().parent.parent
 
@@ -44,6 +44,18 @@ MAX_TIME_SECONDS = 86400
 TALLY_TARGET = 3
 
 DEFAULT_ANNOTATOR = "LO"
+
+# Sponge tracking. OpenCV lives only in the Python of .venv-track, so the
+# server runs track_worker.py there, one sighting at a time, in the
+# background. Without that Python the app works as before: marks stay where
+# they were clicked.
+TRACK_PYTHON = APP_ROOT / ".venv-track" / "bin" / "python"
+TRACK_WORKER = APP_ROOT / "screener" / "track_worker.py"
+# A job decodes about 27 seconds of video and usually takes 3 to 30 seconds;
+# one that has not answered after this long is stopped and counts as failed.
+TRACK_TIMEOUT_SECONDS = 300.0
+# A failed job waits this long before the page's next request queues it again.
+TRACK_RETRY_SECONDS = 300.0
 
 # Export packages land here unless data/settings.json names another folder
 # (for example the synced OnDeck folder in Google Drive). The environment

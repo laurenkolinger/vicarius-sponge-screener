@@ -1,8 +1,10 @@
 /* Sponge Screener: a dark, neutral frame around underwater video.
    The grays carry no hue, so the chrome never tints how the water and the
-   sponges read. Magenta belongs to the mark and to the species chosen for it. */
+   sponges read. Magenta belongs to the mark and to the species chosen for it,
+   and the Later amber belongs to points saved without a species. */
 
 :root {
+  --guide-dock-width: clamp(280px, 26vw, 420px);
   color-scheme: dark;
 
   --bg-0: #0c0c0c;
@@ -26,6 +28,20 @@
   --red: #ff8080;
   --red-soft: rgba(255, 128, 128, 0.12);
   --focus: #8cc8ff;
+  --later: #ffb020;
+
+  /* The species wheel: dark see-through wedges, so the paused frame shows dimly behind. */
+  --wheel-slice: rgba(16, 18, 22, 0.78);
+  --wheel-slice-empty: rgba(16, 18, 22, 0.5);
+  --wheel-line: rgba(255, 255, 255, 0.24);
+  --wheel-lit: rgba(255, 43, 214, 0.85);
+  --wheel-match: rgba(92, 18, 80, 0.86);
+  --wheel-hub-ring: rgba(255, 255, 255, 0.75);
+  --wheel-delete: #ff4a4a;
+  --wheel-chip: rgba(16, 18, 22, 0.92);
+  --wheel-halo: rgba(0, 0, 0, 0.85);
+  --wheel-open: 80ms;
+  --wheel-layer: 57;
 
   --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
   --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -143,18 +159,6 @@ input {
   padding: 0;
   font-family: var(--font-mono);
   font-weight: 700;
-}
-
-.button-primary:not(:disabled) {
-  background: var(--mark);
-  border-color: var(--mark);
-  color: var(--mark-ink);
-  font-weight: 700;
-}
-
-.button-primary:hover:not(:disabled) {
-  background: #ff58e0;
-  border-color: #ff58e0;
 }
 
 .button-toggle[aria-pressed="true"] {
@@ -533,6 +537,12 @@ kbd {
   white-space: nowrap;
 }
 
+.video-later {
+  color: var(--later);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
 .format[data-format="convert"] {
   color: var(--text-2);
 }
@@ -582,12 +592,31 @@ kbd {
   scrollbar-color: #3a3a3a transparent;
 }
 
+/* The theater is what full screen shows: the stage over the transport row, with the
+   wheel, the toasts, and the cards floating inside it. */
+.theater {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-0);
+}
+
+.theater:fullscreen {
+  width: 100vw;
+  height: 100vh;
+}
+
 .stage {
   position: relative;
   flex: 1 1 auto;
   min-height: 200px;
   background: #000000;
   overflow: hidden;
+}
+
+.theater:fullscreen .stage {
+  min-height: 0;
 }
 
 .stage-video,
@@ -704,6 +733,10 @@ kbd {
   background: var(--mark);
 }
 
+.scrub-mark[data-status="unlabeled"] {
+  background: var(--later);
+}
+
 .transport-row {
   display: flex;
   align-items: center;
@@ -744,6 +777,16 @@ kbd {
   padding: 10px;
   border-top: 2px solid var(--line);
   background: var(--bg-1);
+}
+
+/* The panel hides on request (P or the panel button). A species list that failed to load
+   shows it anyway, so its error and Retry stay in reach. */
+body[data-deck="hidden"] .deck {
+  display: none;
+}
+
+body[data-deck="hidden"] .deck:has(#species-error:not([hidden])) {
+  display: grid;
 }
 
 body[data-mode="marking"] .deck {
@@ -833,22 +876,6 @@ body[data-mode="marking"] .pin-code {
 
 body[data-mode="marking"] .pin-key {
   border-color: #5a5a5a;
-}
-
-.pin-slot[data-chosen="true"] .pin-choose {
-  border-color: var(--mark);
-  background: var(--mark-soft);
-  box-shadow: inset 0 0 0 1px var(--mark);
-}
-
-.pin-slot[data-chosen="true"] .pin-key {
-  border-color: var(--mark);
-  background: var(--mark);
-  color: var(--mark-ink);
-}
-
-.pin-slot[data-chosen="true"] .pin-name {
-  color: var(--text);
 }
 
 .pin-assign {
@@ -1035,6 +1062,12 @@ body[data-mode="marking"] .mark-summary {
   flex: 1 1 52%;
 }
 
+.log-later {
+  flex: 0 1 auto;
+  max-height: 32%;
+  border-top: 1px solid var(--line);
+}
+
 .log-tally {
   flex: 1 1 48%;
   border-top: 1px solid var(--line);
@@ -1099,6 +1132,29 @@ body[data-mode="marking"] .mark-summary {
   font-family: var(--font-mono);
   font-size: 14px;
   font-weight: 700;
+}
+
+.sighting[data-status="unlabeled"] .sighting-code {
+  color: var(--later);
+  font-family: var(--font-ui);
+}
+
+/* To label rows reuse the sighting row layout, without a delete button beside them. */
+.to-label-item {
+  border-radius: var(--radius);
+}
+
+.to-label-item .sighting-jump {
+  padding-right: 6px;
+}
+
+.to-label-name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sighting-time {
@@ -1258,6 +1314,13 @@ body[data-mode="marking"] .mark-summary {
   animation: toast-in 140ms ease-out;
 }
 
+/* A passing note lets clicks through to the sponges under it. Error toasts stay
+   selectable and clickable. */
+.toast[data-kind="ok"],
+.toast[data-kind="info"] {
+  pointer-events: none;
+}
+
 .toast[data-kind="ok"] {
   border-color: var(--green);
 }
@@ -1265,6 +1328,17 @@ body[data-mode="marking"] .mark-summary {
 .toast[data-kind="error"] {
   border-color: var(--red);
   background: #2b1717;
+}
+
+.toast:has(.toast-action) {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.toast-action {
+  flex: none;
+  min-height: 26px;
 }
 
 @keyframes toast-in {
@@ -1357,7 +1431,8 @@ body[data-mode="marking"] .mark-summary {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .toast {
+  .toast,
+  .wheel {
     animation: none;
   }
 }
@@ -1379,6 +1454,58 @@ body[data-mode="marking"] .mark-summary {
   border-radius: 10px;
   background: #1b1b1b;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.65);
+}
+
+/* Docked, the guide is a column beside the video inside the theater, in the window and in
+   full screen alike, so the picture shrinks instead of being covered. The theater's other
+   overlays (wheel, toasts, help) are fixed and take no grid cell. */
+body[data-guide-dock="docked"] .theater:has(> #guide:not([hidden])) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--guide-dock-width);
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+body[data-guide-dock="docked"] .theater:has(> #guide:not([hidden])) > .stage {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+body[data-guide-dock="docked"] .theater:has(> #guide:not([hidden])) > .transport {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+body[data-guide-dock="docked"] #guide {
+  position: static;
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  width: auto;
+  min-height: 0;
+  max-height: none;
+  /* Size containment keeps the photo list from setting the theater's height; the column
+     takes the height of the video and scrolls inside. */
+  contain: size;
+  border: 0;
+  border-left: 1px solid var(--line-strong);
+  border-radius: 0;
+  box-shadow: none;
+  overflow: hidden;
+}
+
+/* The docked column is narrow, so the species picker takes a row of its own under the title. */
+body[data-guide-dock="docked"] .guide-head {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+body[data-guide-dock="docked"] .guide-pick {
+  order: 1;
+  flex: 1 0 100%;
+}
+
+body[data-guide-dock="docked"] #guide-dock {
+  border-color: var(--line-strong);
+  background: var(--bg-2);
 }
 
 .guide-head {
@@ -1489,4 +1616,271 @@ body[data-mode="marking"] .mark-summary {
   clip: rect(0 0 0 0);
   white-space: nowrap;
   border: 0;
+}
+
+/* ----- species wheel ----- */
+
+/* A viewport-sized layer inside the theater; only the wheel's own shapes take the pointer,
+   so a click beside the wheel still reaches the picture. */
+.wheel-layer {
+  position: fixed;
+  inset: 0;
+  z-index: var(--wheel-layer);
+  pointer-events: none;
+}
+
+.wheel {
+  position: absolute;
+  pointer-events: none;
+  animation: wheel-in var(--wheel-open) ease-out;
+}
+
+@keyframes wheel-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.wheel-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  font-family: var(--font-ui);
+  user-select: none;
+}
+
+.wheel-wedge {
+  fill: var(--wheel-slice);
+  stroke: var(--wheel-line);
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+  pointer-events: all;
+  cursor: pointer;
+}
+
+.wheel-slot-empty .wheel-wedge {
+  fill: var(--wheel-slice-empty);
+  cursor: default;
+}
+
+.wheel-svg text {
+  dominant-baseline: central;
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.wheel-key {
+  fill: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.wheel-code {
+  fill: var(--text);
+  font-family: var(--font-mono);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.wheel-code-inner {
+  font-size: 13px;
+}
+
+.wheel-code-outer {
+  font-size: 12px;
+}
+
+.wheel-name {
+  fill: var(--text-2);
+  font-style: italic;
+}
+
+.wheel-name-inner {
+  font-size: 10px;
+}
+
+.wheel-name-outer {
+  font-size: 9.5px;
+}
+
+/* The count beside the code of a species already logged on this transect. */
+.wheel-seen {
+  fill: var(--later);
+  font-size: 0.8em;
+  font-weight: 600;
+}
+
+.wheel-slice[data-match="true"] .wheel-wedge {
+  fill: var(--wheel-match);
+}
+
+.wheel-slice[data-match="false"] {
+  opacity: 0.4;
+}
+
+.wheel-slice[data-lit="true"] {
+  opacity: 1;
+}
+
+.wheel-slice[data-lit="true"] .wheel-wedge {
+  fill: var(--wheel-lit);
+}
+
+.wheel-slice[data-lit="true"] text {
+  fill: var(--mark-ink);
+}
+
+.wheel-current {
+  fill: none;
+  stroke: #ffffff;
+  stroke-width: 2px;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.wheel-seam {
+  stroke: #ffffff;
+  stroke-width: 2.5px;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.wheel-hub-hit {
+  fill: transparent;
+  pointer-events: all;
+  cursor: pointer;
+}
+
+.wheel-hub-ring {
+  fill: none;
+  stroke: var(--wheel-hub-ring);
+  stroke-width: 1.5px;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+/* An edit wheel shows a bold ring: white on a labeled row (Unlabel), amber on a Later
+   point (Keep). A new mark keeps the thin ring. */
+.wheel-hub[data-label="Unlabel"] .wheel-hub-ring,
+.wheel-hub[data-label="Keep"] .wheel-hub-ring {
+  stroke: #ffffff;
+  stroke-width: 3px;
+}
+
+.wheel-hub[data-label="Keep"] .wheel-hub-ring {
+  stroke: var(--later);
+}
+
+.wheel-hub[data-lit="true"] .wheel-hub-ring {
+  stroke: var(--mark);
+  stroke-width: 3px;
+}
+
+/* A lit edit hub keeps its tint and grows bolder, so the edit still shows at a glance. */
+.wheel-hub[data-lit="true"][data-label="Unlabel"] .wheel-hub-ring {
+  stroke: #ffffff;
+  stroke-width: 4.5px;
+}
+
+.wheel-hub[data-lit="true"][data-label="Keep"] .wheel-hub-ring {
+  stroke: var(--later);
+  stroke-width: 4.5px;
+}
+
+/* After the first press of Backspace or Delete, the hub ring of an edit wheel turns red
+   until the second press deletes the row or the deletion disarms. */
+.wheel-hub[data-armed="true"][data-label] .wheel-hub-ring {
+  stroke: var(--wheel-delete);
+  stroke-width: 4.5px;
+}
+
+.wheel-hub-label {
+  fill: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  paint-order: stroke;
+  stroke: var(--wheel-halo);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+/* The leader to a shifted mark has the marks' white outline, so it reads on bright and dark water. */
+.wheel-leader {
+  pointer-events: none;
+}
+
+.wheel-leader-under,
+.wheel-leader-line {
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.wheel-leader-under {
+  stroke: #ffffff;
+  stroke-width: 5px;
+}
+
+.wheel-leader-line {
+  stroke: var(--mark);
+  stroke-width: 2px;
+}
+
+/* The readout names the species under the pointer, so the wheel needs no tooltips. */
+.wheel-readout {
+  position: absolute;
+  left: 50%;
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  max-width: calc(100vw - 16px);
+  padding: 5px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--wheel-chip);
+  color: var(--text);
+  font-size: 13px;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.wheel-query {
+  padding: 0 6px;
+  white-space: pre;
+  border-radius: 4px;
+  background: var(--mark-soft);
+  color: var(--mark);
+  font-family: var(--font-mono);
+  font-weight: 700;
+}
+
+.wheel-readout-code {
+  font-family: var(--font-mono);
+  font-weight: 700;
+}
+
+.wheel-readout-name {
+  overflow: hidden;
+  font-style: italic;
+  text-overflow: ellipsis;
+}
+
+.wheel-readout-key,
+.wheel-readout-hint {
+  color: var(--text-2);
+}
+
+.wheel-readout-delete {
+  color: var(--wheel-delete);
+  font-weight: 600;
 }

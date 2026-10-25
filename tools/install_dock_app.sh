@@ -1,8 +1,8 @@
 #!/bin/bash
 # Build "Sponge Screener.app" in ~/Applications and put it in the Dock.
 #
-# The app starts the screener server if it is not already running and opens
-# Chrome on it. Run this script again after moving the project folder.
+# The app starts the screener server, restarts it when the code changed since
+# it started, and opens Chrome on it. Run this script again after moving the project folder.
 set -euo pipefail
 
 PROJECT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -20,8 +20,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key><string>Sponge Screener</string>
   <key>CFBundleDisplayName</key><string>Sponge Screener</string>
   <key>CFBundleIdentifier</key><string>edu.uvi.vicar.sponge-screener</string>
-  <key>CFBundleVersion</key><string>1.0.0</string>
-  <key>CFBundleShortVersionString</key><string>1.0.0</string>
+  <key>CFBundleVersion</key><string>1.1.0</string>
+  <key>CFBundleShortVersionString</key><string>1.1.0</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>launch</string>
   <key>CFBundleIconFile</key><string>icon</string>
@@ -30,20 +30,56 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-cat > "$APP/Contents/MacOS/launch" <<LAUNCH
+# The launcher is written with placeholders, then filled in, so its own
+# variables need no escaping.
+cat > "$APP/Contents/MacOS/launch" <<'LAUNCH'
 #!/bin/bash
-# Start Sponge Screener, or bring it up in Chrome when it is already running.
-export PATH="/opt/homebrew/bin:/usr/local/bin:\$PATH"
-PROJECT="$PROJECT"
+# Start Sponge Screener and open it in Chrome. A server that started before
+# the code last changed is restarted, so the app always runs the newest code.
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+PROJECT="__PROJECT__"
+PORT="__PORT__"
 URL="http://127.0.0.1:$PORT/"
-if curl -s -m 2 "\$URL/api/health" | grep -q '"ok": true'; then
-  open -a "Google Chrome" "\$URL" 2>/dev/null || open "\$URL"
-  exit 0
+LOG="$PROJECT/data/screener.log"
+START_WAIT_TENTHS=200
+STOP_WAIT_TENTHS=50
+
+# True when the screener answers its health check.
+healthy() { curl -s -m 2 "$URL/api/health" | grep -q '"ok": true'; }
+
+# The process listening on the screener port, or nothing.
+server_pid() { lsof -t -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | head -1; }
+
+# Newest modification time, in epoch seconds, of the code and config the server loads at start.
+code_mtime() {
+  find "$PROJECT/screener.py" "$PROJECT/screener" "$PROJECT/config" -type f \( -name '*.py' -o -name '*.csv' \) \
+    -exec stat -f %m {} + 2>/dev/null | sort -n | tail -1
+}
+
+# Start time of a process, in epoch seconds.
+started_at() { date -j -f "%a %b %d %T %Y" "$(ps -o lstart= -p "$1" | sed 's/  */ /g')" +%s 2>/dev/null; }
+
+mkdir -p "$PROJECT/data"
+pid="$(server_pid)"
+if [ -n "$pid" ] && healthy; then
+  started="$(started_at "$pid")"
+  if [ -n "$started" ] && [ "$(code_mtime)" -gt "$started" ]; then
+    kill "$pid"
+    for _ in $(seq 1 "$STOP_WAIT_TENTHS"); do [ -z "$(server_pid)" ] && break; sleep 0.1; done
+  fi
 fi
-mkdir -p "\$PROJECT/data"
-cd "\$PROJECT"
-nohup python3 "\$PROJECT/screener.py" >> "\$PROJECT/data/screener.log" 2>&1 &
+if ! healthy; then
+  cd "$PROJECT"
+  nohup python3 "$PROJECT/screener.py" --no-browser >> "$LOG" 2>&1 < /dev/null &
+  for _ in $(seq 1 "$START_WAIT_TENTHS"); do healthy && break; sleep 0.1; done
+  if ! healthy; then
+    osascript -e "display alert \"Sponge Screener did not start\" message \"The reason is at the end of $LOG.\""
+    exit 1
+  fi
+fi
+open -a "Google Chrome" "$URL" 2>/dev/null || open "$URL"
 LAUNCH
+sed -i '' -e "s|__PROJECT__|$PROJECT|" -e "s|__PORT__|$PORT|" "$APP/Contents/MacOS/launch"
 chmod +x "$APP/Contents/MacOS/launch"
 
 # Icon: one PNG drawn in Python, resized into the sizes an .icns needs.
@@ -59,8 +95,11 @@ iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/icon.icns"
 rm -rf "$(dirname "$ICONSET")"
 touch "$APP"
 
-# Add to the Dock once, then restart the Dock so it shows.
-if ! defaults read com.apple.dock persistent-apps 2>/dev/null | grep -q "Sponge Screener.app"; then
+# Add to the Dock once, then restart the Dock so it shows. The Dock stores the
+# path URL-encoded (Sponge%20Screener.app) next to the bundle identifier, so the
+# check matches either form.
+if ! defaults read com.apple.dock persistent-apps 2>/dev/null \
+    | grep -q -e "edu.uvi.vicar.sponge-screener" -e "Sponge Screener.app" -e "Sponge%20Screener.app"; then
   defaults write com.apple.dock persistent-apps -array-add "<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>$APP</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>"
   killall Dock
 fi

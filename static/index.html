@@ -24,6 +24,10 @@
     <symbol id="i-up" viewBox="0 0 16 16"><path d="M8 13V3.4M4 7.2l4-4 4 4" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-minus" viewBox="0 0 16 16"><path d="M3.5 8h9" fill="none" stroke-width="1.8" stroke-linecap="round"/></symbol>
     <symbol id="i-plus" viewBox="0 0 16 16"><path d="M3.5 8h9M8 3.5v9" fill="none" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="i-panel" viewBox="0 0 16 16"><path d="M2.5 2.5h11v11h-11zM2.5 9.6h11" fill="none" stroke-width="1.4" stroke-linejoin="round"/><path d="M4.6 11.6h1.6M7.2 11.6h1.6M9.8 11.6h1.6" fill="none" stroke-width="1.4" stroke-linecap="round"/></symbol>
+    <symbol id="i-dock" viewBox="0 0 16 16"><path d="M2.5 2.5h11v11h-11zM9.5 2.5v11" fill="none" stroke-width="1.4" stroke-linejoin="round"/><path d="M11 5.5h1M11 7.5h1M11 9.5h1" fill="none" stroke-width="1.4" stroke-linecap="round"/></symbol>
+    <symbol id="i-expand" viewBox="0 0 16 16"><path d="M2.5 6.2V2.5h3.7M9.8 2.5h3.7v3.7M13.5 9.8v3.7H9.8M6.2 13.5H2.5V9.8" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-collapse" viewBox="0 0 16 16"><path d="M6.2 2.5v3.7H2.5M13.5 6.2H9.8V2.5M9.8 13.5V9.8h3.7M2.5 9.8h3.7v3.7" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   </svg>
 
   <header class="topbar">
@@ -77,56 +81,148 @@
     </aside>
 
     <section class="center" aria-label="Player">
-      <div id="stage" class="stage">
-        <video id="video" class="stage-video" muted playsinline preload="auto" disablepictureinpicture tabindex="-1"></video>
-        <!-- No title here on purpose: a hover tooltip would cover the sponges under the pointer.
-             The same words stay on screen in the line under the species strip. -->
-        <canvas id="overlay" class="stage-overlay" role="img"
-                aria-label="Video picture. You click a sponge to pause the video and mark a point, or you drag to draw a box around it."></canvas>
-        <div id="stage-status" class="stage-status" role="status" aria-live="polite">
-          <p id="stage-status-text" class="stage-status-text">Pick a video from the list on the left. Then click a sponge, press its number key, and press Enter.</p>
-          <button id="stage-action" type="button" class="button" hidden
-                  title="You start this video again from the server.">Retry</button>
+      <!-- The theater is what full screen shows: the picture, the transport row, the wheel,
+           the toasts, and the two cards. -->
+      <div id="theater" class="theater">
+        <div id="stage" class="stage">
+          <video id="video" class="stage-video" muted playsinline preload="auto" disablepictureinpicture tabindex="-1"></video>
+          <!-- No title here on purpose: a hover tooltip would cover the sponges under the pointer.
+               The same words stay on screen in the line under the species strip. -->
+          <canvas id="overlay" class="stage-overlay" role="img"
+                  aria-label="Video picture. You click a sponge to pause the video and mark a point, or you drag to draw a box around it."></canvas>
+          <div id="stage-status" class="stage-status" role="status" aria-live="polite">
+            <p id="stage-status-text" class="stage-status-text">Pick a video from the list on the left. Then click a sponge and pick its species in the wheel.</p>
+            <button id="stage-action" type="button" class="button" hidden
+                    title="You start this video again from the server.">Retry</button>
+          </div>
         </div>
-      </div>
 
-      <div class="transport">
-        <div class="scrub-wrap">
-          <div id="scrub-marks" class="scrub-marks" aria-hidden="true"></div>
-          <input id="scrub" class="scrub" type="range" min="0" max="0" step="0.01" value="0" aria-label="Position in the video" disabled
-                 title="You drag to move through the video. The pink ticks show the sightings saved in this video.">
-        </div>
-        <div class="transport-row">
-          <button id="play" type="button" class="button button-icon" aria-label="Play" disabled
-                  title="You play or pause the video. The Space key does the same.">
-            <svg class="icon" aria-hidden="true"><use id="play-icon" href="#i-play"></use></svg>
-          </button>
-          <span id="time" class="time" title="The position in the video and its length, as minutes and seconds.">--:-- / --:--</span>
-          <span class="transport-gap"></span>
-          <div class="speed" role="group" aria-label="Playback speed">
-            <button id="slower" type="button" class="button button-icon" aria-label="Slower"
-                    title="You slow playback down one step. The [ key does the same.">
-              <svg class="icon" aria-hidden="true"><use href="#i-minus"></use></svg>
+        <div class="transport">
+          <div class="scrub-wrap">
+            <div id="scrub-marks" class="scrub-marks" aria-hidden="true"></div>
+            <input id="scrub" class="scrub" type="range" min="0" max="0" step="0.01" value="0" aria-label="Position in the video" disabled
+                   title="You drag to move through the video. The pink ticks show the sightings saved in this video, and the amber ticks show the points saved for later.">
+          </div>
+          <div class="transport-row">
+            <button id="play" type="button" class="button button-icon" aria-label="Play" disabled
+                    title="You play or pause the video. The Space key does the same.">
+              <svg class="icon" aria-hidden="true"><use id="play-icon" href="#i-play"></use></svg>
             </button>
-            <span id="speed" class="speed-value" title="The playback speed. It runs from 0.5x to 3x.">1x</span>
-            <button id="faster" type="button" class="button button-icon" aria-label="Faster"
-                    title="You speed playback up one step. The ] key does the same.">
-              <svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg>
+            <span id="time" class="time" title="The position in the video and its length, as minutes and seconds.">--:-- / --:--</span>
+            <span class="transport-gap"></span>
+            <div class="speed" role="group" aria-label="Playback speed">
+              <button id="slower" type="button" class="button button-icon" aria-label="Slower"
+                      title="You slow playback down one step. The [ key does the same.">
+                <svg class="icon" aria-hidden="true"><use href="#i-minus"></use></svg>
+              </button>
+              <span id="speed" class="speed-value" title="The playback speed. It runs from 0.5x to 3x and starts at 1.5x.">1.5x</span>
+              <button id="faster" type="button" class="button button-icon" aria-label="Faster"
+                      title="You speed playback up one step. The ] key does the same.">
+                <svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg>
+              </button>
+            </div>
+            <button id="grid" type="button" class="button button-icon" aria-label="Quadrant grid and center line" aria-pressed="true"
+                    title="You show or hide the quadrant lines and the center line. The G key does the same.">
+              <svg class="icon" aria-hidden="true"><use href="#i-grid"></use></svg>
+            </button>
+            <button id="done" type="button" class="button button-toggle" aria-pressed="false" disabled
+                    title="You mark this video as fully screened. OnDeck then treats a target species with no rows here as absent. The D key does the same.">
+              <svg class="icon" aria-hidden="true"><use href="#i-check"></use></svg>
+              <span id="done-label">Done</span>
+            </button>
+            <button id="next" type="button" class="button button-icon" aria-label="Next video"
+                    title="You open the next video in the list. The N key does the same.">
+              <svg class="icon" aria-hidden="true"><use href="#i-next"></use></svg>
+            </button>
+            <button id="deck-toggle" type="button" class="button button-icon" aria-label="Species keys panel" aria-pressed="false"
+                    title="You show or hide the panel under the video with the pinned species keys, the pin controls, and the note box. The P key does the same.">
+              <svg class="icon" aria-hidden="true"><use href="#i-panel"></use></svg>
+            </button>
+            <button id="fullscreen" type="button" class="button button-icon" aria-label="Full screen"
+                    title="You fill the screen with the video and its controls. The F key does the same, and F or a long press on Escape leaves.">
+              <svg class="icon" aria-hidden="true"><use id="fullscreen-icon" href="#i-expand"></use></svg>
             </button>
           </div>
-          <button id="grid" type="button" class="button button-icon" aria-label="Quadrant grid and center line" aria-pressed="true"
-                  title="You show or hide the quadrant lines and the center line. The G key does the same.">
-            <svg class="icon" aria-hidden="true"><use href="#i-grid"></use></svg>
-          </button>
-          <button id="done" type="button" class="button button-toggle" aria-pressed="false" disabled
-                  title="You mark this video as fully screened. OnDeck then treats a target species with no rows here as absent. The D key does the same.">
-            <svg class="icon" aria-hidden="true"><use href="#i-check"></use></svg>
-            <span id="done-label">Done</span>
-          </button>
-          <button id="next" type="button" class="button button-icon" aria-label="Next video"
-                  title="You open the next video in the list. The N key does the same.">
-            <svg class="icon" aria-hidden="true"><use href="#i-next"></use></svg>
-          </button>
+        </div>
+
+        <!-- The wheel floats over the whole view and may cover the controls while it is open.
+             It carries no hover tooltips, because they would cover the sponges; its readout
+             chip names the species under the pointer instead. -->
+        <div id="wheel-layer" class="wheel-layer"></div>
+
+        <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+
+        <div id="guide" class="guide" role="dialog" aria-label="Species guide" hidden>
+          <div class="guide-head">
+            <h2 class="panel-title">Species guide</h2>
+            <label class="guide-pick">
+              <span class="visually-hidden">Species</span>
+              <select id="guide-species" class="input"
+                      title="You pick the species to look at. A species you pick in the wheel or the mark bar moves this too."></select>
+            </label>
+            <span id="guide-count" class="guide-count"></span>
+            <button id="guide-dock" type="button" class="button button-icon" aria-label="Dock the guide beside the video" aria-pressed="true"
+                    title="You dock the guide in a column beside the video, so it never covers the picture, or let it float over the page. The app remembers your choice.">
+              <svg class="icon" aria-hidden="true"><use href="#i-dock"></use></svg>
+            </button>
+            <button id="guide-close" type="button" class="button button-icon" aria-label="Close the species guide"
+                    title="You close the guide. The Escape key and the I key do the same.">
+              <svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg>
+            </button>
+          </div>
+          <p id="guide-text" class="guide-text"></p>
+          <div id="guide-images" class="guide-images"></div>
+        </div>
+
+        <div id="help" class="help" role="dialog" aria-label="Keyboard shortcuts" hidden>
+          <div class="help-head">
+            <h2 class="panel-title">Keyboard shortcuts</h2>
+            <button id="help-close" type="button" class="button button-icon" aria-label="Close the shortcuts card"
+                    title="You close this card. The Escape key and the ? key do the same.">
+              <svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg>
+            </button>
+          </div>
+          <div class="help-columns">
+            <section>
+              <h3 class="help-title">Screening (the video keys)</h3>
+              <dl class="keys">
+                <div><dt><kbd>Click</kbd></dt><dd>Pause, mark a point, and open the wheel</dd></div>
+                <div><dt><kbd>Drag</kbd></dt><dd>Pause, draw a box, and open the wheel</dd></div>
+                <div><dt><kbd>Click</kbd> a mark</dt><dd>Paused or playing: change its species</dd></div>
+                <div><dt><kbd>Space</kbd></dt><dd>Play or pause</dd></div>
+                <div><dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Hold to rewind or fast forward at 4x; let go to stop</dd></div>
+                <div><dt><kbd>,</kbd> <kbd>.</kbd></dt><dd>Step one frame (1/30 s)</dd></div>
+                <div><dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>Slower or faster, 0.5x to 3x</dd></div>
+                <div><dt><kbd>Home</kbd></dt><dd>Back to the start</dd></div>
+                <div><dt><kbd>F</kbd></dt><dd>Full screen on or off</dd></div>
+                <div><dt><kbd>P</kbd></dt><dd>Show or hide the species keys panel</dd></div>
+                <div><dt><kbd>G</kbd></dt><dd>Show or hide the grid and center line</dd></div>
+                <div><dt><kbd>Z</kbd></dt><dd>Undo the last pick: discard an unsaved one, else remove the last sighting</dd></div>
+                <div><dt><kbd>D</kbd></dt><dd>Mark the video done, or reopen it</dd></div>
+                <div><dt><kbd>N</kbd></dt><dd>Open the next video in the list</dd></div>
+                <div><dt><kbd>?</kbd></dt><dd>Open or close this card</dd></div>
+              </dl>
+            </section>
+            <section>
+              <h3 class="help-title">Marking (the species wheel)</h3>
+              <dl class="keys">
+                <div><dt><kbd>Click</kbd> a slice</dt><dd>Save that species; the video stays paused</dd></div>
+                <div><dt><kbd>1</kbd> to <kbd>9</kbd>, <kbd>0</kbd></dt><dd>Save the pinned species; the video stays paused</dd></div>
+                <div><dt><kbd>A</kbd> to <kbd>Z</kbd></dt><dd>Filter the wheel; <kbd>⌫</kbd> edits</dd></div>
+                <div><dt><kbd>↑</kbd> <kbd>↓</kbd>, scroll</dt><dd>Spin the outer ring, or move through the matches</dd></div>
+                <div><dt><kbd>Enter</kbd></dt><dd>Save the highlighted match; the video stays paused</dd></div>
+                <div><dt><kbd>Space</kbd>, the hub</dt><dd>Later: save without a species. On a saved mark: Unlabel or Keep. While you type a filter, Space types a space</dd></div>
+                <div><dt><kbd>⌫</kbd> twice</dt><dd>On a saved mark: delete it with its images and track. The first press turns the hub red; any other key cancels</dd></div>
+                <div><dt><kbd>Shift</kbd> + a pick</dt><dd>Save and play on</dd></div>
+                <div><dt><kbd>,</kbd> <kbd>.</kbd>, <kbd>←</kbd> <kbd>→</kbd></dt><dd>Step one frame; the mark and the wheel stay</dd></div>
+                <div><dt><kbd>Esc</kbd>, right-click</dt><dd>Cancel the mark and play on</dd></div>
+                <div><dt><kbd>Click</kbd> the picture</dt><dd>Move the mark there</dd></div>
+                <div><dt><kbd>Click</kbd> elsewhere</dt><dd>Cancel the mark; the video stays paused</dd></div>
+                <div><dt><kbd>Tab</kbd>, <kbd>Shift</kbd>+<kbd>Tab</kbd></dt><dd>Walk the highlight around the wheel; an open guide follows it. The note box takes a click.</dd></div>
+              </dl>
+              <p class="help-note">Time each sighting at the moment the sponge sits closest to the center line.</p>
+            </section>
+          </div>
         </div>
       </div>
 
@@ -140,7 +236,7 @@
 
         <div class="markbar">
           <div class="markbar-summary">
-            <span id="mode-pill" class="mode-pill" title="Screening: the video keys are active. Marking: a mark waits for its species, and the number keys choose one.">Screening</span>
+            <span id="mode-pill" class="mode-pill" title="Screening: the video keys are active. Marking: the wheel is open on a mark, and one pick saves it.">Screening</span>
             <p id="mark-summary" class="mark-summary" role="status" aria-live="polite">Click a sponge in the video to mark it.</p>
           </div>
           <p id="mark-error" class="mark-error" role="alert" hidden></p>
@@ -148,16 +244,12 @@
             <div class="combo">
               <input id="filter" class="input" type="text" placeholder="Filter species" autocomplete="off" spellcheck="false"
                      role="combobox" aria-expanded="false" aria-controls="matches" aria-autocomplete="list" aria-label="Filter species"
-                     title="You type part of a species name or code. Up and Down move through the matches, and Enter chooses the highlighted one.">
+                     title="You type part of a species name or code. Up and Down move through the matches, and Enter chooses the highlighted one; with a mark on screen, that saves the sighting at once.">
               <ul id="matches" class="matches" role="listbox" aria-label="Matching species" hidden></ul>
             </div>
             <input id="note" class="input note" type="text" maxlength="500" placeholder="Note (optional)" autocomplete="off" aria-label="Note" disabled
                    title="You add an optional note. The server appends it after the quadrant phrase in the Notes column.">
             <div class="markbar-buttons">
-              <button id="save" type="button" class="button button-primary" disabled
-                      title="You save this sighting and the video plays again. The Enter key does the same.">Save</button>
-              <button id="save-stay" type="button" class="button" disabled
-                      title="You save this sighting and the video stays paused, ready for another sponge in the same frame. Shift+Enter does the same.">Save and stay</button>
               <button id="cancel" type="button" class="button" disabled
                       title="You discard this mark and the video plays again. The Escape key does the same.">Cancel</button>
             </div>
@@ -170,11 +262,21 @@
       <section class="log-section log-sightings">
         <div class="panel-head">
           <h2 class="panel-title">Sightings in this video</h2>
-          <span id="sightings-count" class="count" title="The number of sightings saved in this video.">0</span>
+          <span id="sightings-count" class="count" title="The number of sightings saved in this video, and how many points in it wait for a species.">0</span>
         </div>
         <div class="panel-scroll">
           <ul id="sightings" class="rows"></ul>
           <p id="sightings-empty" class="empty">No sightings in this video yet.</p>
+        </div>
+      </section>
+      <section class="log-section log-later">
+        <div class="panel-head">
+          <h2 class="panel-title">To label</h2>
+          <span id="to-label-count" class="count" title="The number of points saved for later, across every video. You click one to open its video there and give it a species.">0</span>
+        </div>
+        <div class="panel-scroll">
+          <ul id="to-label" class="rows" aria-label="Points to label"></ul>
+          <p id="to-label-empty" class="empty">No points waiting for a label.</p>
         </div>
       </section>
       <section class="log-section log-tally">
@@ -194,78 +296,13 @@
             </thead>
             <tbody id="tally-rows"></tbody>
           </table>
-          <p id="tally-total" class="empty" title="The number of sightings saved so far, across every video.">0 sightings across all videos.</p>
+          <p id="tally-total" class="empty" title="The number of sightings saved so far, across every video, and the points that still wait for a species.">0 sightings across all videos. 0 points to label.</p>
           <p id="tally-empty" class="empty" hidden>The tally did not load.</p>
         </div>
       </section>
     </aside>
 
   </main>
-
-  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
-
-  <div id="guide" class="guide" role="dialog" aria-label="Species guide" hidden>
-    <div class="guide-head">
-      <h2 class="panel-title">Species guide</h2>
-      <label class="guide-pick">
-        <span class="visually-hidden">Species</span>
-        <select id="guide-species" class="input"
-                title="You pick the species to look at. A number key or a chosen species in the mark bar moves this too."></select>
-      </label>
-      <span id="guide-count" class="guide-count"></span>
-      <button id="guide-close" type="button" class="button button-icon" aria-label="Close the species guide"
-              title="You close the guide. The Escape key and the I key do the same.">
-        <svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg>
-      </button>
-    </div>
-    <p id="guide-text" class="guide-text"></p>
-    <div id="guide-images" class="guide-images"></div>
-  </div>
-
-  <div id="help" class="help" role="dialog" aria-label="Keyboard shortcuts" hidden>
-    <div class="help-head">
-      <h2 class="panel-title">Keyboard shortcuts</h2>
-      <button id="help-close" type="button" class="button button-icon" aria-label="Close the shortcuts card"
-              title="You close this card. The Escape key and the ? key do the same.">
-        <svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg>
-      </button>
-    </div>
-    <div class="help-columns">
-      <section>
-        <h3 class="help-title">Screening (the video keys)</h3>
-        <dl class="keys">
-          <div><dt><kbd>Click</kbd></dt><dd>Pause and mark a point</dd></div>
-          <div><dt><kbd>Drag</kbd></dt><dd>Pause and draw a box</dd></div>
-          <div><dt><kbd>Space</kbd></dt><dd>Play or pause</dd></div>
-          <div><dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Jump 2 seconds</dd></div>
-          <div><dt><kbd>,</kbd> <kbd>.</kbd></dt><dd>Step one frame (1/30 s)</dd></div>
-          <div><dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>Slower or faster, 0.5x to 3x</dd></div>
-          <div><dt><kbd>Home</kbd></dt><dd>Back to the start</dd></div>
-          <div><dt><kbd>G</kbd></dt><dd>Show or hide the grid and center line</dd></div>
-          <div><dt><kbd>Z</kbd></dt><dd>Remove the last sighting in this video</dd></div>
-          <div><dt><kbd>D</kbd></dt><dd>Mark the video done, or reopen it</dd></div>
-          <div><dt><kbd>N</kbd></dt><dd>Open the next video in the list</dd></div>
-          <div><dt><kbd>?</kbd></dt><dd>Open or close this card</dd></div>
-        </dl>
-      </section>
-      <section>
-        <h3 class="help-title">Marking (after a click or drag)</h3>
-        <dl class="keys">
-          <div><dt><kbd>1</kbd> to <kbd>9</kbd>, <kbd>0</kbd></dt><dd>Choose a pinned species</dd></div>
-          <div><dt><kbd>A</kbd> to <kbd>Z</kbd></dt><dd>Filter all species by name or code</dd></div>
-          <div><dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Move through the matches</dd></div>
-          <div><dt><kbd>Enter</kbd> in the filter</dt><dd>Choose the highlighted match</dd></div>
-          <div><dt><kbd>Tab</kbd></dt><dd>Go to the note</dd></div>
-          <div><dt><kbd>Enter</kbd></dt><dd>Save and play</dd></div>
-          <div><dt><kbd>Shift</kbd>+<kbd>Enter</kbd></dt><dd>Save and stay paused</dd></div>
-          <div><dt><kbd>Esc</kbd></dt><dd>Cancel the mark and play</dd></div>
-          <div><dt><kbd>Click</kbd> or <kbd>Drag</kbd></dt><dd>Replace the mark</dd></div>
-          <div><dt><kbd>,</kbd> <kbd>.</kbd></dt><dd>Step one frame before saving</dd></div>
-        </dl>
-        <p class="help-note">Time each sighting at the moment the sponge sits closest to the center line.</p>
-      </section>
-    </div>
-  </div>
 
 </body>
 </html>
