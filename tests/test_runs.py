@@ -588,15 +588,15 @@ def test_a_linked_run_is_refused_over_http(vicarius, runs_root, tmp_path):
 
 
 def test_a_run_name_with_an_accent_works_through_the_encoded_header_and_the_image_query(vicarius, runs_root):
-    name = "run_26-10-27_Muñoz"
+    name = "run_26-10-27_Bahía"
     make_run(runs_root, name)
-    encoded = {"X-Screener-Run": "run_26-10-27_Mu%C3%B1oz"}
+    encoded = {"X-Screener-Run": "run_26-10-27_Bah%C3%ADa"}
     opened = vicarius.client.post("/api/project/open", {"project_dir": str(runs_root / name)}, mutation_header=False)
     assert opened.json()["run"] == name
     assert vicarius.client.post("/api/settings", {"annotator": "LO"}, headers=encoded).status == 200
     row = vicarius.client.post("/api/observations", observation(), headers=encoded).json()["row"]
     assert (runs_root / name / "frames" / row["FrameFileName"]).is_file()
-    crop = vicarius.client.get(f"/media/crops/{row['CropFileName']}?run=run_26-10-27_Mu%C3%B1oz")
+    crop = vicarius.client.get(f"/media/crops/{row['CropFileName']}?run=run_26-10-27_Bah%C3%ADa")
     assert crop.status == 200 and crop.body == PNG
 
 
