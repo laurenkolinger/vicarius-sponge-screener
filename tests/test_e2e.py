@@ -261,6 +261,10 @@ class RunningApp:
             folder: An empty folder; ``data`` and ``cache`` go inside it.
         """
         self.data_dir = folder / "data"
+        # The app has no default annotator, so the scenarios start as a person
+        # who typed LO once: settings.json remembers it.
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        (self.data_dir / "settings.json").write_text(json.dumps({"annotator": "LO"}), encoding="utf-8")
         self.app = ScreenerApp(self.data_dir, folder / "cache", CONFIG_DIR, STATIC_DIR, bucket_url, 0)
         self.server = make_server(self.app, "127.0.0.1", 0)
         self.url = "http://127.0.0.1:%d/" % self.app.port

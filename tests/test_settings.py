@@ -45,7 +45,7 @@ def test_missing_file_gives_defaults(tmp_path):
     path = tmp_path / "settings.json"
     loaded = load_settings(path, SPECIES)
     assert loaded == defaults()
-    assert loaded.annotator == "LO"
+    assert loaded.annotator == ""
     assert loaded.pins["1"] == "ACAU" and loaded.pins["9"] is None
     assert list(tmp_path.iterdir()) == []
 
@@ -223,7 +223,8 @@ def test_validate_annotator_rejects_empty_long_and_hostile(bad):
 @pytest.mark.parametrize(
     "broken, fragment",
     [
-        (Settings(annotator="", pins=default_pins(SPECIES), export_root="/tmp/x"), "annotator"),
+        (Settings(annotator="a b", pins=default_pins(SPECIES), export_root="/tmp/x"), "annotator"),
+        (Settings(annotator=None, pins=default_pins(SPECIES), export_root="/tmp/x"), "annotator"),
         (Settings(annotator="LO", pins={"1": "ACAU"}, export_root="/tmp/x"), "pins"),
         (Settings(annotator="LO", pins=None, export_root="/tmp/x"), "pins"),
         (Settings(annotator="LO", pins={**default_pins(SPECIES), "9": 7}, export_root="/tmp/x"), "pins.9"),
@@ -270,3 +271,34 @@ def test_load_does_not_share_the_pins_object_between_calls(tmp_path):
     first.pins["1"] = None
     second = load_settings(tmp_path / "settings.json", SPECIES)
     assert second.pins["1"] == "ACAU"
+
+
+# ----- no default annotator, and a per-run export folder -----
+
+
+def test_unset_annotator_saves_and_loads_as_empty(tmp_path):
+    """An annotator of "" means nobody has typed initials; it saves, loads back, and never turns into LO."""
+    path = tmp_path / "settings.json"
+    save_settings(path, Settings(annotator="", pins=default_pins(SPECIES), export_root=str(tmp_path)))
+    assert json.loads(path.read_text(encoding="utf-8"))["annotator"] == ""
+    assert load_settings(path, SPECIES).annotator == ""
+
+
+def test_invalid_stored_annotator_falls_back_to_empty(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"annotator": "<script>", "pins": default_pins(SPECIES)}), encoding="utf-8")
+    assert load_settings(path, SPECIES).annotator == ""
+
+
+def test_default_export_root_argument_is_used_when_the_file_names_none(tmp_path):
+    run_exports = tmp_path / "run_26-10-27_LO" / "exports"
+    assert load_settings(tmp_path / "missing.json", SPECIES, run_exports).export_root == str(run_exports)
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"annotator": "LO"}), encoding="utf-8")
+    assert load_settings(path, SPECIES, run_exports).export_root == str(run_exports)
+
+
+def test_stored_export_root_wins_over_the_default_argument(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"annotator": "LO", "export_root": "/Volumes/Drive/OnDeck"}), encoding="utf-8")
+    assert load_settings(path, SPECIES, tmp_path / "exports").export_root == "/Volumes/Drive/OnDeck"
