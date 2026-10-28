@@ -76,12 +76,12 @@ parameters:
     type: "string"
     default: ""
     required: true
-    description: "Type your initials in the Annotator field. VICARIUS fills them in from your sign-in, and Sponge Screener writes them into every sighting and refuses to save one without them."
+    description: "Type your initials in the Annotator field. VICARIUS fills them in from your sign-in; Sponge Screener writes them to every sighting and blocks saves without initials."
   - name: "pins"
     type: "list"
     default: ["ACAU", "AFUL", "CDEL", "MLAE", "CPLI", "ACRA", "ACOM", "XMUT"]
     required: false
-    description: "Pin up to ten species to the number keys 1 to 9 and 0. A video marked done counts every pinned species with no sighting as absent, and each run keeps its own pins in settings.json."
+    description: "Pin up to ten species to the number keys 1 to 9 and 0. Sponge Screener counts every pinned species with no sighting as absent when a video is marked done; each run keeps its own pins in settings.json."
   - name: "export_root"
     type: "string"
     default: "${run_dir}/exports"
@@ -91,7 +91,7 @@ parameters:
     type: "string"
     default: "/mnt/tear/sponge_screener"
     required: false
-    description: "Set work_root in config/vicarius.ini to move the video cache, capped at 60 GB. Sponge Screener refuses a folder inside the module folder, which the drive sync copies, and a folder whose disk is not mounted."
+    description: "Set work_root in config/vicarius.ini to move the video cache, capped at 60 GB. Sponge Screener rejects folders inside the module directory (the drive sync copies those) and folders on unmounted disks."
 
 runtime:
   python_version: ">=3.9"

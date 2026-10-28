@@ -33,10 +33,10 @@ Each run keeps these settings. They are set in the window or in the file named, 
 
 | Parameter | Type | Default | What it controls |
 |-----------|------|---------|------------------|
-| `annotator` | string | none | Type your initials in the Annotator field. VICARIUS fills them in from your sign-in, and Sponge Screener writes them into every sighting and refuses to save one without them. |
-| `pins` | list | ACAU, AFUL, CDEL, MLAE, CPLI, ACRA, ACOM, XMUT | Pin up to ten species to the number keys 1 to 9 and 0. A video marked done counts every pinned species with no sighting as absent, and each run keeps its own pins in `settings.json`. |
+| `annotator` | string | none | Type your initials in the Annotator field. VICARIUS fills them in from your sign-in; Sponge Screener writes them to every sighting and blocks saves without initials. |
+| `pins` | list | ACAU, AFUL, CDEL, MLAE, CPLI, ACRA, ACOM, XMUT | Pin up to ten species to the number keys 1 to 9 and 0. Sponge Screener counts every pinned species with no sighting as absent when a video is marked done; each run keeps its own pins in `settings.json`. |
 | `export_root` | string | `exports` in the run folder | Set `export_root` in the run's `settings.json` to send packages to another folder, such as a synced OnDeck folder. Sponge Screener writes each package as `spongeGroundTruth_<YYYYMMDD>` inside it. |
-| `work_root` | string | `/mnt/tear/sponge_screener` | Set `work_root` in [config/vicarius.ini](config/vicarius.ini) to move the video cache, capped at 60 GB. Sponge Screener refuses a folder inside the module folder, which the drive sync copies, and a folder whose disk is not mounted. |
+| `work_root` | string | `/mnt/tear/sponge_screener` | Set `work_root` in [config/vicarius.ini](config/vicarius.ini) to move the video cache, capped at 60 GB. Sponge Screener rejects folders inside the module directory (the drive sync copies those) and folders on unmounted disks. |
 
 ## Outputs and data-dictionary entries
 
