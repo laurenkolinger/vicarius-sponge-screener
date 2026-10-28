@@ -142,7 +142,7 @@ def clips(tmp_path_factory: pytest.TempPathFactory) -> Dict[str, Path]:
         ``{"pan": path, "gray": path, "blink": path, "fade": path}``.
     """
     if not TRACK_PYTHON.exists():
-        pytest.skip(f"the tracking venv is missing ({TRACK_PYTHON}); the worker needs its OpenCV. See the README section Tracking.")
+        pytest.skip(f"the tracking venv is missing ({TRACK_PYTHON}); the worker needs its OpenCV. See the README section Resume from cold.")
     ffmpeg = find_ffmpeg()
     if ffmpeg is None:
         pytest.skip("ffmpeg is not installed (brew install ffmpeg); the worker decodes video with it")

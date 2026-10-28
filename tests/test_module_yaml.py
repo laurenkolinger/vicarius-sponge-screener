@@ -6,6 +6,7 @@ with the code, so a change to one without the other fails here.
 """
 
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,12 @@ EXPECTED_DATASETS = {
     "sponge_screener_tracks",
     "sponge_screener_export",
 }
+# A setting's tooltip opens with what the person does (VICARIUS tooltip rule 2).
+TOOLTIP_IMPERATIVES = {"Type", "Pin", "Set", "Pick", "Tick", "Choose", "Name"}
+# A sentence ends at a period, question mark or exclamation mark followed by a space;
+# the dot inside settings.json is not an end.
+SENTENCE_END = re.compile(r"[.!?] ")
+SCREEN_REFERENCES = ("above", "below", "this tab", "this window", "this page")
 REQUIRED_KEYS = ("name", "display_name", "tags", "version", "description", "author", "created", "type", "inputs",
                  "outputs", "parameters", "runtime", "cli", "ui")
 
@@ -72,10 +79,14 @@ def test_outputs_bind_every_dataset_with_eml(contract):
 
 
 def test_every_parameter_has_a_tooltip_that_follows_the_rule(contract):
+    """Each setting's text opens with an imperative, runs one or two sentences, and points at nothing on screen."""
     for parameter in contract["parameters"]:
         text = parameter["description"]
-        assert text and not text.startswith("You"), parameter["name"]
-        assert text.count(".") <= 3, parameter["name"]
+        assert text.split()[0] in TOOLTIP_IMPERATIVES, (parameter["name"], text)
+        assert 1 <= len(SENTENCE_END.findall(text + " ")) <= 2, (parameter["name"], text)
+        lowered = text.lower()
+        assert not any(phrase in lowered for phrase in SCREEN_REFERENCES), (parameter["name"], text)
+        assert chr(0x2014) not in text and chr(0x2013) not in text, parameter["name"]
 
 
 def test_default_pins_match_species_csv(contract):

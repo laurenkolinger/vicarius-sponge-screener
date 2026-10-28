@@ -47,21 +47,42 @@ def load_entry_point():
 def test_work_root_gives_the_cache_and_the_default_runs_folder(tmp_path):
     module = tmp_path / "modules" / "sponge_screener"
     module.mkdir(parents=True)
+    (tmp_path / "work").mkdir()
     ini = write_ini(tmp_path, f"[vicarius]\nwork_root = {tmp_path / 'work'}\n")
     paths = load_vicarius_paths(ini, module)
     assert paths.cache_dir == tmp_path / "work" / "cache"
     assert paths.runs_root == module / "inprocess"
-    assert not (tmp_path / "work").exists()
+    assert not (tmp_path / "work" / "cache").exists()
 
 
 def test_runs_root_setting_wins(tmp_path):
+    (tmp_path / "work").mkdir()
     ini = write_ini(tmp_path, f"[vicarius]\nwork_root = {tmp_path / 'work'}\nruns_root = {tmp_path / 'runs'}\n")
     assert load_vicarius_paths(ini, tmp_path / "module").runs_root == tmp_path / "runs"
 
 
 def test_paths_are_normalized_and_spaces_trimmed(tmp_path):
+    (tmp_path / "work").mkdir()
     ini = write_ini(tmp_path, f"[vicarius]\nwork_root =   {tmp_path}/a/../work/   \n")
     assert load_vicarius_paths(ini, tmp_path / "module").cache_dir == tmp_path / "work" / "cache"
+
+
+def test_missing_work_root_on_a_folder_that_is_not_a_mount_is_refused(tmp_path):
+    """An unmounted disk leaves its mount folder as an empty folder on the system disk: refuse it."""
+    empty_mount_point = tmp_path / "tear"
+    empty_mount_point.mkdir()
+    ini = write_ini(tmp_path, f"[vicarius]\nwork_root = {empty_mount_point / 'sponge_screener'}\n")
+    with pytest.raises(VicariusConfigError, match="is that disk mounted"):
+        load_vicarius_paths(ini, tmp_path / "module")
+
+
+def test_missing_work_root_directly_on_a_mount_point_is_allowed(tmp_path, monkeypatch):
+    mount = tmp_path / "tear"
+    mount.mkdir()
+    real_ismount = os.path.ismount
+    monkeypatch.setattr(os.path, "ismount", lambda path: Path(path) == mount or real_ismount(path))
+    ini = write_ini(tmp_path, f"[vicarius]\nwork_root = {mount / 'sponge_screener'}\n")
+    assert load_vicarius_paths(ini, tmp_path / "module").cache_dir == mount / "sponge_screener" / "cache"
 
 
 def test_shipped_ini_names_a_work_folder_off_the_synced_drive():
@@ -81,7 +102,7 @@ def test_shipped_ini_names_a_work_folder_off_the_synced_drive():
         ("[vicarius]\nwork_root = relative/folder\n", "not an absolute path"),
         ("[vicarius]\nwork_root = /tmp/a\x07b\n", "control character"),
         ("[vicarius]\nwork_root = /no-such-mount-xyz/sponge\n", "is that disk mounted"),
-        ("[vicarius]\nwork_root = /tmp/x\nruns_root = runs\n", "runs_root"),
+        ("[vicarius]\nwork_root = /tmp\nruns_root = runs\n", "runs_root"),
         ("not an ini file at all [[[\n", "unreadable"),
         ("[vicarius]\nwork_root = /tmp/a\nwork_root = /tmp/b\n", "unreadable"),
     ],
@@ -117,6 +138,7 @@ def test_work_root_inside_the_module_folder_is_refused(tmp_path, inside):
 def test_work_root_that_only_shares_a_prefix_is_allowed(tmp_path):
     module = tmp_path / "sponge"
     module.mkdir()
+    (tmp_path / "sponge_work").mkdir()
     ini = write_ini(tmp_path, f"[vicarius]\nwork_root = {tmp_path / 'sponge_work'}\n")
     assert load_vicarius_paths(ini, module).cache_dir == tmp_path / "sponge_work" / "cache"
 
@@ -168,6 +190,7 @@ def test_vicarius_mode_serves_runs_end_to_end(tmp_path):
     run = runs / "run_26-10-27_LO"
     run.mkdir(parents=True)
     (run / "project.json").write_text(json.dumps({"id": "26-10-27_LO", "steps": {}, "access_log": []}), encoding="utf-8")
+    (tmp_path / "work").mkdir()
     ini = write_ini(tmp_path, f"[vicarius]\nwork_root = {tmp_path / 'work'}\nruns_root = {runs}\n")
     env = dict(os.environ, VICARIUS_LOCKS_PATH=str(tmp_path / "no-locks.json"))
     process = subprocess.Popen(

@@ -456,7 +456,7 @@ async function request(method, path, body) {
     options.headers[MUTATION_HEADER] = '1';
   }
   if (state.run) {
-    options.headers[RUN_HEADER] = state.run;
+    options.headers[RUN_HEADER] = encodeURIComponent(state.run);
   }
   if (body !== undefined) {
     options.headers['Content-Type'] = 'application/json';
@@ -1209,7 +1209,8 @@ function stopVideoTimers() {
 
 /**
  * Open a video: tell the server, load its sightings and their tracks, and start playback,
- * through conversion when Chrome cannot play the format.
+ * through conversion when Chrome cannot play the format. Without initials in Annotator the
+ * video stays closed and the field is marked, because the server records who opened it.
  * @param {object} entry A catalog video entry ({key, name, playable, converted, status}).
  * @param {?{key: string, time: number, row: object}} [jump] A point to land on once the video
  *   loads: the video seeks there instead of the remembered position, pauses, and opens the
@@ -1217,6 +1218,14 @@ function stopVideoTimers() {
  * @returns {Promise<void>} Settles after the open call and the sightings call returned.
  */
 async function openVideo(entry, jump = null) {
+  if (!state.annotator) {
+    // The server records who opened a video and refuses without initials, so a
+    // video opened now would never get its screening row.
+    dom.annotator.setAttribute('aria-invalid', 'true');
+    dom.annotator.focus();
+    toast(NO_INITIALS_TEXT, 'error', Infinity);
+    return;
+  }
   scrubber.stop();
   if (state.pending) {
     endMark();

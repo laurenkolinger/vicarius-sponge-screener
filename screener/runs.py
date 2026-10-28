@@ -15,7 +15,10 @@ from pathlib import Path
 from typing import Any
 
 PROJECT_FILE = "project.json"
-RUN_NAME = re.compile(r"run_[A-Za-z0-9][A-Za-z0-9_.-]{0,159}")
+# run_ then a letter or digit, then letters, digits, underscore, period or
+# hyphen. Letters and digits include accented ones, because VICARIUS keeps any
+# character Python counts as alphanumeric in a hand-typed run name.
+RUN_NAME = re.compile(r"run_[^\W_][\w.-]{0,159}")
 NUL = "\x00"
 
 
@@ -66,8 +69,9 @@ class RunFolders:
 
         Raises:
             ValueError: Starting with ``run:`` when the name is not text, does
-                not match ``run_`` plus letters, digits, period, underscore and
-                hyphen (160 characters at most after ``run_``), or names a link.
+                not match ``run_`` plus a letter or digit and then letters,
+                digits, period, underscore and hyphen (160 characters at most
+                after ``run_``), or names a link.
             UnknownRun: When no such folder exists, or it holds no project.json.
         """
         if not isinstance(name, str):
@@ -97,14 +101,17 @@ class RunFolders:
 
         Raises:
             ValueError: Starting with ``project_dir:`` when the value is
-                missing, not text, holds a NUL, or is not a folder directly under
-                the runs folder; or starting with ``run:`` from folder().
+                missing, not text, holds a NUL, is relative, or is not a folder
+                directly under the runs folder; or starting with ``run:`` from
+                folder().
             UnknownRun: From folder().
         """
         if not isinstance(project_dir, str) or not project_dir.strip():
             raise ValueError("project_dir: missing; expected the run folder VICARIUS opened the window with")
         if NUL in project_dir:
             raise ValueError("project_dir: holds a NUL character")
+        if not os.path.isabs(project_dir.strip()):
+            raise ValueError(f"project_dir: {project_dir.strip()[:120]!r} is not an absolute path")
         candidate = Path(os.path.abspath(project_dir.strip()))
         if candidate.parent != self.root:
             raise ValueError(f"project_dir: {candidate} is not a run folder directly under {self.root}")

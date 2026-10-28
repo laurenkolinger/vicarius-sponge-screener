@@ -4,16 +4,19 @@ VICARIUS mints ``project.json`` in every run folder with ``id``, ``name``,
 ``created_at``, ``updated_at``, ``project_dir``, ``repo_dir``,
 ``current_step``, ``steps`` and ``access_log``. The screener fills two steps:
 step 1, Screen videos, is ``running`` once a video is opened; step 2, Export
-the package, is ``done`` after an export, and the export also appends an
-``access_log`` row. Every other field is kept as it is.
+the package, is ``completed`` after an export, and the export also appends an
+``access_log`` row. Every other field is kept as it is. ``running`` and
+``completed`` are the words the VICARIUS run cards count.
 
-A write reads the file, changes the parsed object, writes a temp file in the
-same folder and swaps it in with ``os.replace``, so a crash leaves the old
-file or the new one. A file that is missing or cannot be parsed is reported
-in one stderr line and left alone: run bookkeeping never stops a sighting or
-an export.
+A write holds the exclusive lock on ``.project.json.lock`` beside the file,
+the lock VICARIUS's own writer takes when a person opens the run, then reads
+the file, changes the parsed object, writes a temp file in the same folder and
+swaps it in with ``os.replace``, so a crash leaves the old file or the new
+one. A file that is missing or cannot be parsed is reported in one stderr line
+and left alone: run bookkeeping never stops a sighting or an export.
 """
 
+import fcntl
 import json
 import os
 import sys
@@ -29,14 +32,15 @@ SCREEN_STEP_NAME = "Screen videos"
 EXPORT_STEP = 2
 EXPORT_STEP_NAME = "Export the package"
 RUNNING = "running"
-DONE = "done"
+COMPLETED = "completed"
+LOCK_FILE = ".project.json.lock"
 JSON_INDENT = 2
 LOG_PREFIX = "runstate:"
 FILE_MODE = 0o644
 
-# One lock per process: the screener's own threads never interleave a
-# read-change-write. VICARIUS writes the same file only when a person opens or
-# creates the run, before the page starts calling.
+# One lock per process for the screener's own threads, and the file lock that
+# VICARIUS takes too, because a person can open the run from its card while a
+# window on it is saving.
 _write_lock = threading.Lock()
 
 
@@ -116,7 +120,7 @@ def _write(path: Path, document: Dict[str, Any]) -> bool:
 
 
 def _update(path: Path, change: Callable[[Dict[str, Any]], bool], now: str) -> bool:
-    """Apply one change to project.json under the process lock.
+    """Apply one change to project.json under the process lock and the run's file lock.
 
     Args:
         path: The project.json file.
@@ -128,11 +132,21 @@ def _update(path: Path, change: Callable[[Dict[str, Any]], bool], now: str) -> b
         True when the file was rewritten.
     """
     with _write_lock:
-        document = _read(path)
-        if document is None or not change(document):
+        try:
+            lock_handle = open(path.parent / LOCK_FILE, "a+")
+        except OSError as error:
+            _report(path, f"could not open the lock file {path.parent / LOCK_FILE} ({error})")
             return False
-        document["updated_at"] = now
-        return _write(path, document)
+        with lock_handle:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            try:
+                document = _read(path)
+                if document is None or not change(document):
+                    return False
+                document["updated_at"] = now
+                return _write(path, document)
+            finally:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 
 def _steps(document: Dict[str, Any]) -> Dict[str, Any]:
@@ -158,7 +172,7 @@ def mark_step(path: Path, number: int, name: str, status: str, now: Optional[str
         path: The run's project.json.
         number: The step number, 1 or more; stored as a text key as VICARIUS does.
         name: The step name shown by VICARIUS.
-        status: ``running`` or ``done``.
+        status: ``running`` or ``completed``.
         now: The AST timestamp for ``updated_at``; the current time when None.
 
     Returns:
@@ -186,7 +200,7 @@ def mark_step(path: Path, number: int, name: str, status: str, now: Optional[str
 
 
 def record_export(path: Path, initials: str, package: str, rows: int, now: Optional[str] = None) -> bool:
-    """Mark the export step done and add an access_log row for the export.
+    """Mark the export step completed and add an access_log row for the export.
 
     Args:
         path: The run's project.json.
@@ -202,7 +216,7 @@ def record_export(path: Path, initials: str, package: str, rows: int, now: Optio
     noun = "sighting" if rows == 1 else "sightings"
 
     def change(document: Dict[str, Any]) -> bool:
-        _steps(document)[str(EXPORT_STEP)] = {"name": EXPORT_STEP_NAME, "status": DONE}
+        _steps(document)[str(EXPORT_STEP)] = {"name": EXPORT_STEP_NAME, "status": COMPLETED}
         if initials:
             log = document.get("access_log")
             if not isinstance(log, list):

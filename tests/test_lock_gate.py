@@ -6,7 +6,6 @@ start a real server on a free port with temporary folders and a FakeS3.
 """
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -175,7 +174,10 @@ def test_locked_page_request_gets_the_lock_page(running, registry):
 
 @pytest.mark.parametrize(
     "path",
-    ["/api/species", "/api/tally", "/api/catalog", "/media/crops/ID001_ACAU_TOPLEFT_FLC_T1.png", "/video?key=" + KEY_T1],
+    [
+        "/api/species", "/api/tally", "/api/catalog", "/media/crops/ID001_ACAU_TOPLEFT_FLC_T1.png", "/video?key=" + KEY_T1,
+        "/guide/guide.json", "/api/tracks?key=" + KEY_T1,
+    ],
 )
 def test_locked_api_reads_answer_423(running, registry, path):
     lock(registry, True)
@@ -201,6 +203,15 @@ def test_locked_project_open_answers_423(running, registry):
     lock(registry, True)
     answer = running.client.post("/api/project/open", {"project_dir": "/nowhere"}, mutation_header=False)
     assert answer.status == 423
+
+
+@pytest.mark.parametrize("path", ["/static/index.html", "/static/INDEX.HTML"])
+def test_the_app_page_under_static_is_locked_too(running, registry, path):
+    lock(registry, True)
+    answer = running.client.get(path, headers={"Accept": "text/html"})
+    assert answer.status == 200
+    assert "Under development. Please come back later." in answer.text
+    assert "app.js" not in answer.text
 
 
 def test_static_files_and_health_pass_while_locked(running, registry):

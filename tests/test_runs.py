@@ -8,6 +8,8 @@ FakeS3.
 
 import json
 import os
+import subprocess
+import sys
 import threading
 from datetime import date
 from pathlib import Path
@@ -22,6 +24,17 @@ from tests.fakes3 import FakeS3
 RUN_A = "run_26-10-27_LO"
 RUN_B = "run_26-10-27_AB"
 STAMP = "2026-10-27T20:00:00-04:00"
+# How long the lock test watches a blocked write before it releases the lock.
+LOCK_WAIT_SECONDS = 1.0
+# A second process that takes the run's file lock the way VICARIUS does, says so, and
+# holds it until it reads a line.
+LOCK_HOLDER = (
+    "import fcntl, sys\n"
+    "handle = open(sys.argv[1], 'a+')\n"
+    "fcntl.flock(handle.fileno(), fcntl.LOCK_EX)\n"
+    "print('locked', flush=True)\n"
+    "sys.stdin.readline()\n"
+)
 
 
 def make_run(root: Path, name: str, initials: str = "LO") -> Path:
@@ -183,7 +196,7 @@ def test_mark_step_writes_the_step_and_keeps_every_other_field(runs_root):
     assert after["updated_at"] == STAMP
     for field in ("id", "name", "created_at", "project_dir", "repo_dir", "current_step", "access_log", "initials", "name_auto"):
         assert after[field] == before[field], field
-    assert [path.name for path in folder.iterdir()] == ["project.json"]
+    assert sorted(path.name for path in folder.iterdir()) == [".project.json.lock", "project.json"]
 
 
 def test_mark_step_twice_writes_once(runs_root):
@@ -198,7 +211,7 @@ def test_record_export_marks_the_step_and_logs_the_export(runs_root):
     path = runs_root / RUN_A / "project.json"
     assert runstate.record_export(path, "LO", "spongeGroundTruth_20261027", 1, now=STAMP) is True
     after = json.loads(path.read_text(encoding="utf-8"))
-    assert after["steps"]["2"] == {"name": "Export the package", "status": "done"}
+    assert after["steps"]["2"] == {"name": "Export the package", "status": "completed"}
     assert after["access_log"][-1] == {
         "ts": STAMP, "initials": "LO", "action": "export", "purpose": "Exported spongeGroundTruth_20261027 with 1 sighting"
     }
@@ -209,7 +222,7 @@ def test_record_export_without_initials_logs_no_row(runs_root):
     path = runs_root / RUN_A / "project.json"
     runstate.record_export(path, "", "spongeGroundTruth_20261027", 4, now=STAMP)
     after = json.loads(path.read_text(encoding="utf-8"))
-    assert after["steps"]["2"]["status"] == "done"
+    assert after["steps"]["2"]["status"] == "completed"
     assert len(after["access_log"]) == 1
 
 
@@ -270,6 +283,44 @@ def test_concurrent_exports_each_log_one_row(runs_root):
         thread.join(timeout=30)
     after = json.loads(path.read_text(encoding="utf-8"))
     assert len(after["access_log"]) == 1 + 8
+
+
+def test_a_write_waits_for_the_lock_vicarius_holds(runs_root):
+    """VICARIUS's writer holds .project.json.lock; the screener's write waits for it, so no row is lost."""
+    folder = runs_root / RUN_A
+    holder = subprocess.Popen(
+        [sys.executable, "-c", LOCK_HOLDER, str(folder / ".project.json.lock")],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        assert holder.stdout.readline().strip() == "locked"
+        done = threading.Event()
+        worker = threading.Thread(
+            target=lambda: (runstate.record_export(folder / "project.json", "LO", "spongeGroundTruth_20261027", 1), done.set())
+        )
+        worker.start()
+        assert not done.wait(LOCK_WAIT_SECONDS), "the screener wrote project.json while another process held the lock"
+        assert len(project(folder)["access_log"]) == 1
+        holder.stdin.write("release\n")
+        holder.stdin.flush()
+        assert done.wait(30)
+        worker.join(timeout=30)
+    finally:
+        holder.kill()
+        holder.wait(timeout=30)
+    assert len(project(folder)["access_log"]) == 2
+
+
+def test_statuses_are_the_words_vicarius_counts():
+    """The run cards count "completed" and "running" (vicarius_ui_os/module_views.py); a third word would count as nothing."""
+    assert runstate.RUNNING == "running"
+    assert runstate.COMPLETED == "completed"
+    launcher = Path("/mnt/rip/vicarius_drive/vicarius_ui_os/module_views.py")
+    if not launcher.is_file():
+        pytest.skip(f"{launcher} is not on this machine, so the cross-check against the launcher is skipped")
+    text = launcher.read_text(encoding="utf-8")
+    assert '_COMPLETED_STATUS = "completed"' in text
+    assert '_RUNNING_STATUS = "running"' in text
 
 
 def test_ast_now_carries_the_atlantic_offset():
@@ -383,7 +434,7 @@ def test_export_goes_into_the_run_and_logs_it(vicarius, runs_root):
     assert package == runs_root / RUN_A / "exports" / ("spongeGroundTruth_" + date.today().strftime("%Y%m%d"))
     assert (package / "observations.csv").is_file()
     record = project(runs_root / RUN_A)
-    assert record["steps"]["2"] == {"name": "Export the package", "status": "done"}
+    assert record["steps"]["2"] == {"name": "Export the package", "status": "completed"}
     assert record["access_log"][-1]["action"] == "export"
     assert record["access_log"][-1]["initials"] == "LO"
     assert record["access_log"][-1]["purpose"] == f"Exported {package.name} with 1 sighting"
@@ -483,3 +534,76 @@ def test_standalone_refuses_a_run_header_and_project_open(tmp_path, fake, monkey
 def test_app_needs_a_data_folder_or_a_runs_folder(tmp_path, fake):
     with pytest.raises(ValueError, match="got neither"):
         start_app(tmp_path, fake.url)
+
+
+# ----- findings of the code review -----
+
+
+def test_a_hand_edit_of_settings_json_takes_effect_and_survives_a_later_save(vicarius, runs_root, tmp_path):
+    set_initials(vicarius, RUN_A, "LO")
+    vicarius.client.post("/api/observations", observation(), headers=in_run(RUN_A))
+    synced = tmp_path / "synced_ondeck"
+    synced.mkdir()
+    path = runs_root / RUN_A / "settings.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["export_root"] = str(synced)
+    path.write_text(json.dumps(document), encoding="utf-8")
+    exported = vicarius.client.post("/api/export", {}, headers=in_run(RUN_A))
+    assert exported.status == 200, exported.body
+    assert Path(exported.json()["path"]).parent == synced
+    set_initials(vicarius, RUN_A, "MK")
+    after = json.loads(path.read_text(encoding="utf-8"))
+    assert after["export_root"] == str(synced) and after["annotator"] == "MK"
+
+
+def test_a_run_made_again_under_the_same_name_starts_fresh(vicarius, runs_root):
+    set_initials(vicarius, RUN_A, "AB")
+    assert vicarius.client.post("/api/observations", observation(), headers=in_run(RUN_A)).status == 201
+    old = runs_root / RUN_A
+    old.rename(runs_root.parent / "archived_run")
+    make_run(runs_root, RUN_A, "LO")
+    assert vicarius.client.get("/api/species", headers=in_run(RUN_A)).json()["annotator"] == ""
+    saved = vicarius.client.post("/api/observations", observation(), headers=in_run(RUN_A))
+    assert saved.status == 400 and saved.error.startswith("annotator: empty")
+    assert not (runs_root / RUN_A / "observations.csv").exists()
+
+
+def test_only_an_image_may_name_its_run_in_the_query(vicarius, runs_root):
+    set_initials(vicarius, RUN_A)
+    posted = vicarius.client.post(f"/api/observations?run={RUN_A}", observation())
+    assert posted.status == 409
+    assert vicarius.client.get(f"/api/tracks?key={KEY_T1}&run={RUN_A}").status == 409
+    assert vicarius.client.get(f"/api/species?run={RUN_A}").status == 409
+    assert not (runs_root / RUN_A / "observations.csv").exists()
+
+
+def test_a_linked_run_is_refused_over_http(vicarius, runs_root, tmp_path):
+    outside = make_run(tmp_path / "elsewhere", "run_outside")
+    os.symlink(outside, runs_root / "run_link")
+    answer = vicarius.client.get("/api/species", headers=in_run("run_link"))
+    assert answer.status == 400 and "is a link" in answer.error
+    opened = vicarius.client.post("/api/project/open", {"project_dir": str(runs_root / "run_link")}, mutation_header=False)
+    assert opened.status == 400
+
+
+def test_a_run_name_with_an_accent_works_through_the_encoded_header_and_the_image_query(vicarius, runs_root):
+    name = "run_26-10-27_Muñoz"
+    make_run(runs_root, name)
+    encoded = {"X-Screener-Run": "run_26-10-27_Mu%C3%B1oz"}
+    opened = vicarius.client.post("/api/project/open", {"project_dir": str(runs_root / name)}, mutation_header=False)
+    assert opened.json()["run"] == name
+    assert vicarius.client.post("/api/settings", {"annotator": "LO"}, headers=encoded).status == 200
+    row = vicarius.client.post("/api/observations", observation(), headers=encoded).json()["row"]
+    assert (runs_root / name / "frames" / row["FrameFileName"]).is_file()
+    crop = vicarius.client.get(f"/media/crops/{row['CropFileName']}?run=run_26-10-27_Mu%C3%B1oz")
+    assert crop.status == 200 and crop.body == PNG
+
+
+def test_an_encoded_header_cannot_smuggle_a_path(vicarius):
+    answer = vicarius.client.get("/api/species", headers={"X-Screener-Run": "run_a%2F..%2F..%2Fetc"})
+    assert answer.status == 400 and answer.error.startswith("run:")
+
+
+def test_a_relative_project_dir_is_refused(runs_root):
+    with pytest.raises(ValueError, match="not an absolute path"):
+        RunFolders(runs_root).name_for_project_dir(f"inprocess/{RUN_A}")

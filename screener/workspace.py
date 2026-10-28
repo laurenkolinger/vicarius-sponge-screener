@@ -4,11 +4,16 @@ Standalone, the screener has one workspace, the ``--data-dir`` folder. In
 VICARIUS mode every run folder is a workspace of its own, opened the first
 time a request names that run, so two runs never share a sighting, an ID
 counter, a settings file, or a tracking queue.
+
+settings.json is read again whenever the file on disk changes (its inode,
+modification time or size), because one server lives for days and a person
+may edit export_root by hand between sightings.
 """
 
+import sys
 import threading
 from pathlib import Path
-from typing import Any, Callable, List, Mapping, Optional, Sequence
+from typing import Any, Callable, List, Mapping, Optional, Sequence, Tuple
 
 from screener import runstate
 from screener.settings import Settings, load_settings, save_settings, validate_annotator
@@ -22,6 +27,7 @@ EXPORTS_FOLDER = "exports"
 NO_ANNOTATOR = "annotator: empty; type your initials in the Annotator field first"
 
 TrackerFactory = Callable[[ObservationStore], Tracker]
+FileSignature = Optional[Tuple[int, int, int]]
 
 
 class Workspace:
@@ -31,6 +37,8 @@ class Workspace:
         name: The VICARIUS run folder name, or None for the standalone data folder.
         data_dir: The folder with observations.csv, videos_screened.csv,
             frames/, crops/, tracks/, trash/, .lock, and settings.json.
+        identity: ``(device, inode)`` of data_dir when it was opened, so a run
+            folder deleted and made again under the same name is noticed.
         project_file: The run's project.json, or None standalone.
         store: The ObservationStore of data_dir.
         tracker: The tracking queue that writes into this store's tracks/.
@@ -67,8 +75,12 @@ class Workspace:
         self.project_file = project_file
         self._species = list(species)
         self.store = ObservationStore(self.data_dir, self._species, site_names)
+        folder = self.data_dir.stat()
+        self.identity = (folder.st_dev, folder.st_ino)
         self._settings_path = self.data_dir / SETTINGS_FILE
+        self._default_export_root = default_export_root
         self._settings_lock = threading.Lock()
+        self._settings_signature = self._signature()
         self._settings = load_settings(self._settings_path, self._species, default_export_root)
         self.tracker = make_tracker(self.store)
 
@@ -78,9 +90,33 @@ class Workspace:
 
     # ----- settings -----
 
+    def _signature(self) -> FileSignature:
+        """Return ``(inode, modification time in ns, size)`` of settings.json, or None when it is missing."""
+        try:
+            status = self._settings_path.stat()
+        except FileNotFoundError:
+            return None
+        return (status.st_ino, status.st_mtime_ns, status.st_size)
+
+    def _refresh(self) -> None:
+        """Read settings.json again when the file changed on disk; call with the settings lock held.
+
+        A file that cannot be read keeps the settings in memory and prints one
+        stderr line, so a passing read error never stops a sighting.
+        """
+        try:
+            signature = self._signature()
+            if signature == self._settings_signature:
+                return
+            self._settings = load_settings(self._settings_path, self._species, self._default_export_root)
+            self._settings_signature = self._signature()
+        except OSError as error:
+            sys.stderr.write(f"settings: could not read {self._settings_path} ({error}); keeping the settings in memory\n")
+
     def settings(self) -> Settings:
-        """Return a copy of the current settings."""
+        """Return a copy of the current settings, read again first when settings.json changed on disk."""
         with self._settings_lock:
+            self._refresh()
             return Settings(self._settings.annotator, dict(self._settings.pins), self._settings.export_root)
 
     def annotator(self) -> str:
@@ -119,6 +155,7 @@ class Workspace:
         if not fields:
             raise ValueError(f"settings: nothing to change; send {' or '.join(SETTINGS_FIELDS)}")
         with self._settings_lock:
+            self._refresh()
             annotator = self._settings.annotator
             pins = dict(self._settings.pins)
             if "annotator" in fields:
@@ -128,6 +165,7 @@ class Workspace:
             changed = Settings(annotator, pins, self._settings.export_root)
             save_settings(self._settings_path, changed)
             self._settings = changed
+            self._settings_signature = self._signature()
 
     # ----- run bookkeeping -----
 
@@ -137,7 +175,7 @@ class Workspace:
             runstate.mark_step(self.project_file, runstate.SCREEN_STEP, runstate.SCREEN_STEP_NAME, runstate.RUNNING)
 
     def note_export(self, package: str, rows: int) -> None:
-        """Mark the run's export step done and log the export in project.json (standalone: nothing).
+        """Mark the run's export step completed and log the export in project.json (standalone: nothing).
 
         Args:
             package: The package folder name.

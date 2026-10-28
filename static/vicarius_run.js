@@ -13,7 +13,7 @@
 /** Initials VICARIUS signs a person in with: two to four letters. */
 export const INITIALS_PATTERN = /^[A-Za-z]{2,4}$/;
 
-/** The header that names the run on every API call. */
+/** The header that names the run on every API call, percent-encoded (a header carries only Latin-1). */
 export const RUN_HEADER = 'X-Screener-Run';
 
 /** The query parameter that names the run on an image address. */

@@ -9,10 +9,12 @@ and the bucket listing go to a work folder off the synced drive, named in
     work_root = /mnt/tear/sponge_screener
     # runs_root = <module folder>/inprocess   (optional; this is the default)
 
-The work folder itself is created when missing, but its parent must exist, so
-an unmounted disk is refused rather than filled in on the system disk. A work
-folder inside the module folder is refused, because the drive sync copies
-everything there.
+The work folder must already exist, or its parent must be a mount point, so
+an unmounted disk is refused rather than filled in on the system disk: an
+unmounted /mnt/tear is an empty folder on the system disk, not a mount point,
+and the work folder made on the mounted disk is not there. A work folder
+inside the module folder is refused, because the drive sync copies everything
+there.
 """
 
 import configparser
@@ -89,8 +91,8 @@ def load_vicarius_paths(ini_path: Path, module_dir: Path) -> VicariusPaths:
         VicariusConfigError: When the file is missing or unreadable, has no
             ``[vicarius]`` section or ``work_root``, a folder value is blank,
             relative or holds a control character, the work folder sits
-            inside the module folder, or the work folder's parent does not
-            exist.
+            inside the module folder, or the work folder does not exist and
+            its parent is not a mount point.
     """
     source = Path(ini_path)
     parser = configparser.ConfigParser(interpolation=None)
@@ -113,9 +115,10 @@ def load_vicarius_paths(ini_path: Path, module_dir: Path) -> VicariusPaths:
             f"{WORK_ROOT_KEY}: {work_root} is inside the module folder {module}, which the drive sync copies; "
             "name a folder off the synced drive, such as /mnt/tear/sponge_screener"
         )
-    if not work_root.parent.is_dir():
+    if not work_root.is_dir() and not os.path.ismount(work_root.parent):
         raise VicariusConfigError(
-            f"{WORK_ROOT_KEY}: the parent folder {work_root.parent} of {work_root} does not exist; is that disk mounted?"
+            f"{WORK_ROOT_KEY}: {work_root} does not exist and its parent {work_root.parent} is not a mounted disk; "
+            "is that disk mounted? Create the folder by hand on the right disk to use another place"
         )
     if RUNS_ROOT_KEY in settings:
         runs_root = _absolute_folder(settings.get(RUNS_ROOT_KEY), RUNS_ROOT_KEY, source)

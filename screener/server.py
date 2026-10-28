@@ -452,12 +452,18 @@ class ScreenerApp:
         if self.runs is None:
             raise ValueError("run: this screener keeps one data folder (it was started without --vicarius), so it has no runs")
         folder = self.runs.folder(run)
+        status = folder.stat()
+        identity = (status.st_dev, status.st_ino)
         with self._workspaces_lock:
             if self._closed:
                 raise StoreError("run: the screener is shutting down")
             existing = self._workspaces.get(run)
-            if existing is not None:
+            if existing is not None and existing.identity == identity:
                 return existing
+            if existing is not None:
+                # The run folder was deleted and made again under the same name:
+                # nothing of the old run may carry over.
+                existing.close()
             # A relative export folder, so settings.json stays right if the run folder moves.
             opened = self._open_workspace(folder, run, folder / PROJECT_FILE, Path(EXPORTS_FOLDER))
             self._workspaces[run] = opened
@@ -1089,11 +1095,17 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(refused.body)
         self._note = "module locked"
 
-    def _workspace(self, query: Mapping[str, List[str]]) -> Workspace:
-        """Return the workspace this request names: the run header, else the run query parameter.
+    def _workspace(self, query: Mapping[str, List[str]], from_query: bool = False) -> Workspace:
+        """Return the workspace this request names in the run header, or for an image in the run query parameter.
+
+        Only an image address may name its run in the query string, because an
+        image cannot carry a header. Every API call names it in the header,
+        which another website cannot add without the browser asking first.
 
         Args:
             query: The parsed query string.
+            from_query: True for the image route, which reads ``?run=``
+                when the header is absent.
 
         Returns:
             The run's workspace, or the standalone one when no run is named.
@@ -1103,7 +1115,10 @@ class _Handler(BaseHTTPRequestHandler):
             NoRun, UnknownRun, ValueError: From ScreenerApp.workspace.
         """
         run = self.headers.get(RUN_HEADER)
-        if run is None:
+        if run is not None:
+            # The page percent-encodes the header, since a header carries only Latin-1.
+            run = urllib.parse.unquote(run)
+        elif from_query:
             run = self._query_value(query, RUN_QUERY)
         return self.server.app.workspace(run.strip() if run else None)
 
@@ -1439,7 +1454,7 @@ class _Handler(BaseHTTPRequestHandler):
             raise HttpError(HTTP_NOT_FOUND, f"route: no route for GET {MEDIA_ROUTE}{rest}")
         if not MEDIA_NAME.fullmatch(name) or name in FORBIDDEN_SEGMENTS:
             raise HttpError(HTTP_BAD_REQUEST, f"name: {name!r} must match ^[A-Za-z0-9_.-]+$ and name a file")
-        store = self._workspace(query).store
+        store = self._workspace(query, from_query=True).store
         root = (store.frames_dir if folder == MEDIA_FOLDERS[0] else store.crops_dir).resolve()
         target = self._safe_path(root, name)
         self._send_file(target, CONTENT_TYPES.get(extension_of(name), BINARY_TYPE), None, False, NO_CACHE)

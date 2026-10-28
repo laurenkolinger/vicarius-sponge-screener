@@ -13,6 +13,8 @@ from typing import Optional
 from screener import lock_status
 
 STATIC_PREFIX = "/static/"
+# A page under /static/ (index.html) is the app itself, so the lock covers it.
+PAGE_SUFFIX = ".html"
 HEALTH_PATH = "/api/health"
 # Paths a person never navigates to: the API, the images, the guide, and the video relay.
 NON_PAGE_PREFIXES = ("/api/", "/media/", "/guide/", "/video")
@@ -111,12 +113,15 @@ def refusal(method: str, path: str, accept: Optional[str]) -> Optional[Refusal]:
 
     Returns:
         None when the module is unlocked, or the request is for a static file
-        or the health check. Otherwise the lock page for a page request, or a
-        423 JSON answer ``{"error": "locked: <message>", "locked": true}``.
+        other than an HTML page, or the health check. Otherwise the lock page
+        for a page request, or a 423 JSON answer
+        ``{"error": "locked: <message>", "locked": true}``.
     """
     if not lock_status.is_locked():
         return None
-    if path.startswith(STATIC_PREFIX) or path == HEALTH_PATH:
+    if path == HEALTH_PATH:
+        return None
+    if path.startswith(STATIC_PREFIX) and not path.lower().endswith(PAGE_SUFFIX):
         return None
     if is_page_request(method, path, accept):
         return Refusal(HTTP_OK, HTML_TYPE, LOCK_PAGE_HTML.encode("utf-8"))
