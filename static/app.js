@@ -1221,9 +1221,8 @@ async function openVideo(entry, jump = null) {
   if (!state.annotator) {
     // The server records who opened a video and refuses without initials, so a
     // video opened now would never get its screening row.
-    dom.annotator.setAttribute('aria-invalid', 'true');
+    askForInitials();
     dom.annotator.focus();
-    toast(NO_INITIALS_TEXT, 'error', Infinity);
     return;
   }
   scrubber.stop();
@@ -3462,6 +3461,16 @@ async function saveAnnotator() {
 }
 
 /**
+ * Mark the empty annotator field and keep one message on screen until initials are saved.
+ * The toast helper never replaces a sticky toast, so the old one is removed first.
+ */
+function askForInitials() {
+  dom.annotator.setAttribute('aria-invalid', 'true');
+  dismissToast(NO_INITIALS_TEXT);
+  toast(NO_INITIALS_TEXT, 'error', Infinity);
+}
+
+/**
  * Remove a toast by its text, sticky or not.
  * @param {string} text The toast's message.
  */
@@ -3501,8 +3510,7 @@ async function seedInitials() {
     await saveAnnotator();
   }
   if (!state.annotator) {
-    dom.annotator.setAttribute('aria-invalid', 'true');
-    toast(NO_INITIALS_TEXT, 'error', Infinity);
+    askForInitials();
   }
 }
 
