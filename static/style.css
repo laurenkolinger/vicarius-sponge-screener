@@ -176,6 +176,14 @@ input {
   color: var(--text-3);
 }
 
+/* A control that cannot be used never looks switched on: the disabled look wins
+   over a pressed toggle, such as the grid button while no run is open. */
+.button:disabled[aria-pressed] {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--text-3);
+}
+
 .input {
   width: 100%;
   min-height: 30px;
