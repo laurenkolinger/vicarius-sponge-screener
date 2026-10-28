@@ -337,6 +337,11 @@ kbd {
   display: none;
 }
 
+/* Opened without a run under VICARIUS: nothing was loaded, so the log column shows nothing. */
+body[data-run="none"] .panel.log {
+  visibility: hidden;
+}
+
 .current-video {
   flex: 1 1 auto;
   min-width: 0;

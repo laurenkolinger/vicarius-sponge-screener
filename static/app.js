@@ -155,8 +155,13 @@ const STORAGE = {
   speed: 'screener.speed.v2',
 };
 const IDLE_TEXT = 'Pick a video from the list on the left. Then click a sponge and pick its species in the wheel.';
-const NO_RUN_TEXT = 'Open Sponge Screener from a run: on the VICARIUS desktop, open the Sponge Screener card and pick New run or a run.';
+const NO_RUN_TEXT = 'Open a run from the Sponge Screener card on the VICARIUS desktop.';
 const NO_INITIALS_TEXT = 'Type your initials in Annotator before you log sightings.';
+/** The controls that call the server, disabled while the page has no run to work in. */
+const NO_RUN_DISABLED = [
+  'annotator', 'exportButton', 'guideToggle', 'search', 'refresh', 'slower', 'faster', 'grid', 'deckToggle', 'done', 'next',
+  'fullscreen',
+];
 
 // ---------------------------------------------------------------------- state
 
@@ -3442,6 +3447,35 @@ async function saveAnnotator() {
     const carried = state.annotator ? `, so sightings still carry ${state.annotator}` : '';
     toast(`The annotator was not saved${carried}. ${endSentence(error.message)}`, 'error');
   }
+  if (state.annotator) {
+    dismissToast(NO_INITIALS_TEXT);
+  }
+}
+
+/**
+ * Remove a toast by its text, sticky or not.
+ * @param {string} text The toast's message.
+ */
+function dismissToast(text) {
+  for (const node of Array.from(dom.toasts.children)) {
+    if (node.dataset.text === text) {
+      node.remove();
+    }
+  }
+}
+
+/**
+ * Show why the page cannot work and disable every control that would call the server, so
+ * nothing invites a click that can only fail. The right panel stays empty, because nothing
+ * was loaded into it.
+ * @param {string} text The sentence for the player.
+ */
+function enterNoRun(text) {
+  setStatus('error', text);
+  document.body.dataset.run = 'none';
+  for (const name of NO_RUN_DISABLED) {
+    dom[name].disabled = true;
+  }
 }
 
 /**
@@ -3459,7 +3493,7 @@ async function seedInitials() {
   }
   if (!state.annotator) {
     dom.annotator.setAttribute('aria-invalid', 'true');
-    toast(NO_INITIALS_TEXT, 'error');
+    toast(NO_INITIALS_TEXT, 'error', Infinity);
   }
 }
 
@@ -3474,7 +3508,7 @@ async function joinRun() {
   try {
     health = await request('GET', '/api/health');
   } catch (error) {
-    setStatus('error', `The server did not answer. ${endSentence(error.message)}`);
+    enterNoRun(`The server did not answer. ${endSentence(error.message)}`);
     return false;
   }
   if (!health.runs) {
@@ -3482,19 +3516,24 @@ async function joinRun() {
   }
   const projectDir = projectDirFromSearch(window.location.search);
   if (!projectDir) {
-    setStatus('error', NO_RUN_TEXT);
+    enterNoRun(NO_RUN_TEXT);
     return false;
   }
   try {
     const answer = await request('POST', '/api/project/open', { project_dir: projectDir });
     state.run = typeof answer.run === 'string' ? answer.run : '';
   } catch (error) {
-    setStatus('error', `${endSentence(error.message)} ${NO_RUN_TEXT}`);
+    enterNoRun(`${endSentence(error.message)} ${NO_RUN_TEXT}`);
+    return false;
+  }
+  if (!state.run) {
+    enterNoRun(NO_RUN_TEXT);
     return false;
   }
   dom.runName.textContent = state.run;
-  dom.runName.hidden = !state.run;
-  return Boolean(state.run);
+  dom.runName.title = `Sponge Screener saves every sighting, image, track and export package in this VICARIUS run folder, inprocess/${state.run}.`;
+  dom.runName.hidden = false;
+  return true;
 }
 
 /**

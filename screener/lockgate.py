@@ -42,6 +42,7 @@ LOCK_PAGE_HTML = """<!doctype html>
   .vic-lock-page p { font-size: 15px; line-height: 1.6; margin: 0; color: #b0a7ab; }
   .vic-lock-page a { color: #FFB3D9; }
   .vic-lock-footer { margin-top: 28px; font-size: 12px; color: #b0a7ab; }
+  .vic-lock-footer + .vic-lock-footer { margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -57,7 +58,7 @@ LOCK_PAGE_HTML = """<!doctype html>
   <p>Under development. Please come back later.
      <a href="mailto:lauren.olinger@uvi.edu">Email Lauren</a> for questions.</p>
   <div class="vic-lock-footer">VICARIUS module lock</div>
-  <div class="vic-lock-footer">Sponge Screener - built by Lauren Olinger</div>
+  <div class="vic-lock-footer">Built by Lauren Olinger</div>
 </div>
 </body>
 </html>
