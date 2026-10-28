@@ -634,7 +634,7 @@ function renderBreadcrumb() {
     const button = el('button', {
       class: 'crumb',
       text: crumb.name,
-      title: `You open the folder ${crumb.name}.`,
+      title: `Open the folder ${crumb.name} in the bucket.`,
       attrs: { type: 'button' },
       data: { prefix: crumb.prefix },
     });
@@ -659,7 +659,7 @@ function upNode(parent) {
   const name = crumbs[crumbs.length - 1].name;
   const button = el('button', {
     class: 'folder-row folder-up',
-    title: `You go up one folder, to ${name}.`,
+    title: `Go up one folder, to ${name}.`,
     attrs: { type: 'button' },
     data: { prefix: parent },
   }, [icon('up'), el('span', { text: `Up to ${name}` })]);
@@ -674,7 +674,7 @@ function upNode(parent) {
 function folderNode(folder) {
   const button = el('button', {
     class: 'folder-row',
-    title: `You open the folder ${folder.name}.`,
+    title: `Open the folder ${folder.name} in the bucket.`,
     attrs: { type: 'button' },
     data: { prefix: folder.prefix },
   }, [icon('folder'), el('span', { text: folder.name })]);
@@ -701,18 +701,18 @@ function videoNode(video) {
     el('span', {
       class: 'badge',
       text: statusLabel(status, video.sightings),
-      title: 'new: nobody has opened this video. in progress: it was opened, and the number counts its sightings. done: you marked it fully screened.',
+      title: 'New means nobody has opened the video, and in progress means it was opened, with the number counting its sightings. Done means a person marked it fully screened.',
       data: { status },
     }),
     later > 0 ? el('span', {
       class: 'video-later',
       text: `· ${later} later`,
-      title: 'Points in this video that you saved for later. You give each one a species from the To label list.',
+      title: 'Points saved for later in the video, each still waiting for a species. Give them species from the To label list.',
     }) : '',
     el('span', {
       class: 'format',
       text: format.text,
-      title: 'plays now: Chrome plays this format directly. needs conversion: the server converts the file first, which takes a few minutes.',
+      title: 'Plays now means Chrome plays the format directly. Needs conversion means Sponge Screener converts the file with FFmpeg first, which takes a few minutes.',
       data: { format: format.kind },
     }),
   ]);
@@ -720,7 +720,7 @@ function videoNode(video) {
   const size = formatBytes(video.size);
   const open = el('button', {
     class: 'video-open',
-    title: `You open ${video.name}${size ? ` (${size})` : ''}. It plays from where you left it, minus 2 seconds.`,
+    title: `Open ${video.name}${size ? ` (${size})` : ''}. It plays from where it was left, minus 2 seconds.`,
     attrs: { type: 'button' },
     data: { key: video.key },
   }, [el('span', { class: 'video-name' }, nameNodes), meta]);
@@ -744,22 +744,22 @@ function queueNode(video) {
   const job = state.queue[video.key];
   const verb = video.playable ? 'download' : 'conversion';
   let title = video.playable
-    ? 'You queue this video for background download, so it plays later without waiting.'
-    : 'You queue this video for background conversion. The server downloads it and converts it so Chrome can play it.';
+    ? 'Queue the video for background download into the cache folder, so it plays later without waiting.'
+    : 'Queue the video for background conversion. Sponge Screener downloads it and converts it with FFmpeg so Chrome can play it.';
   let content = icon('queue');
   let label = `Queue ${video.name} for background ${verb}`;
   if (job && job.state === 'working') {
     content = percentText(job.fraction);
     label = `Background ${verb} of ${video.name}: ${percentText(job.fraction)}`;
-    title = `The server is working on this video in the background: ${percentText(job.fraction)}.`;
+    title = `Sponge Screener is working on the video in the background: ${percentText(job.fraction)}.`;
   } else if (job && job.state === 'ready') {
     content = icon('check');
-    label = `${video.name} is ready on this Mac`;
-    title = 'This video is ready on this Mac. It plays without waiting.';
+    label = `${video.name} is ready in the cache folder`;
+    title = 'The video is ready in the cache folder and plays without waiting.';
   } else if (job && job.state === 'failed') {
     content = '!';
     label = `Background ${verb} of ${video.name} failed`;
-    title = `The background ${verb} failed. ${endSentence(job.message)} You can click to try again.`;
+    title = `The background ${verb} failed. ${endSentence(job.message)} Click to try again.`;
   }
   return el('button', {
     class: 'button button-icon video-queue',
@@ -833,7 +833,7 @@ async function queueVideo(key) {
     return;
   }
   if (current && current.state === 'ready') {
-    toast('This video is already on this Mac.', 'info');
+    toast('This video is already in the cache folder.', 'info');
     return;
   }
   const kind = entry.playable ? 'prefetch' : 'convert';
@@ -950,8 +950,8 @@ function renderPins() {
     const choose = el('button', {
       class: 'pin-choose',
       title: code
-        ? `You save the mark on screen as ${name || code} and the video stays paused. The ${slot} key does the same, and Shift plays on.`
-        : `Key ${slot} has no species yet. You highlight a species in the filter list, then click the pin in this corner.`,
+        ? `Save the open mark as ${name || code}; the video stays paused. The ${slot} key does the same, and Shift with it plays on.`
+        : `Key ${slot} holds no species yet. Highlight a species in the filter list, then click the pin in the corner of the key.`,
       attrs: {
         type: 'button',
         'aria-label': code ? `Key ${slot}: ${code}, ${name}` : `Key ${slot}: empty`,
@@ -964,7 +964,7 @@ function renderPins() {
     ]);
     const assign = el('button', {
       class: 'pin-assign',
-      title: `You pin the species highlighted in the filter list to key ${slot}. The server remembers your pins.`,
+      title: `Pin the species highlighted in the filter list to key ${slot}. Sponge Screener keeps the pins in settings.json in the data folder.`,
       attrs: { type: 'button', 'aria-label': `Pin the highlighted species to key ${slot}` },
       data: { slot },
     }, [icon('pin')]);
@@ -1119,8 +1119,8 @@ function renderMatches() {
     return el('li', {
       class: 'match',
       title: state.mode === 'marking'
-        ? `You save the mark on screen as ${species ? species.name : code} and the video stays paused.`
-        : `You hold ${species ? species.name : code} ready for pinning. Then you click the pin in the corner of a number key.`,
+        ? `Save the open mark as ${species ? species.name : code}; the video stays paused.`
+        : `Hold ${species ? species.name : code} ready for pinning, then click the pin in the corner of a number key to put it there.`,
       attrs: { role: 'option', id: `match-${code}`, 'aria-selected': String(selected) },
       data: { code },
     }, children);
@@ -1252,7 +1252,7 @@ async function openVideo(entry, jump = null) {
   state.conversion = null;
   state.videoStatus = entry.status === 'done' ? 'done' : 'in progress';
   dom.currentVideo.textContent = entry.name;
-  dom.currentVideo.title = `The video that is open now: ${entry.key}`;
+  dom.currentVideo.title = `The full bucket key of the open video: ${entry.key}`;
   renderBrowser();
   renderSightings();
   renderDone();
@@ -1433,7 +1433,7 @@ function followConversion(token, status) {
 function showConversionFailure(token, message) {
   setStatus('failed', `The conversion failed, so this video cannot play yet. ${endSentence(message)}`, {
     label: 'Convert again',
-    title: 'You ask the server to convert this video again.',
+    title: 'Convert the open video again. Sponge Screener queues it behind any conversion already running.',
     run: () => startConversion(token, 'You asked for another try.'),
   });
 }
@@ -1498,7 +1498,7 @@ async function onVideoError() {
   } else {
     setStatus('failed', `This video did not play, even as a converted copy.${detail}`, {
       label: 'Try again',
-      title: 'You load this video again from the server.',
+      title: 'Load the converted copy of the open video again from the server.',
       run: () => playSource('converted'),
     });
   }
@@ -2866,7 +2866,7 @@ function renderUnsaved() {
   }
   runtime.unsavedToast = toast(message, 'error', Infinity, {
     label: 'Retry',
-    title: 'You send every unsaved sighting to the server again. The page kept their frames and crops, so nothing is lost.',
+    title: 'Send every unsaved sighting to the server again. The page still holds their frames and crops, so each one saves in full.',
     run: retryUnsaved,
   });
 }
@@ -3071,8 +3071,8 @@ function sightingNode(row) {
   const name = species ? species.name : row['Sponge Type'] || row.SpeciesCode;
   const clock = row.Timestamp || formatClock(Number(row.TimestampSeconds));
   const title = status === 'unlabeled'
-    ? `You jump to ${row.ID} at ${clock}, and the wheel opens on it so you can give it a species. ${row.Notes || ''}`
-    : `You jump to ${row.ID} at ${clock} and the video pauses there. ${name}. ${row.Notes || ''}`;
+    ? `Jump to ${row.ID} at ${clock} and open the wheel on it to give it a species. ${row.Notes || ''}`
+    : `Jump to ${row.ID} at ${clock}; the video pauses there. ${name}. ${row.Notes || ''}`;
 
   const jump = el('button', {
     class: 'sighting-jump',
@@ -3094,8 +3094,8 @@ function sightingNode(row) {
   const remove = el('button', {
     class: 'button button-icon sighting-delete',
     title: armed
-      ? `You confirm: the server removes ${row.ID} and moves its two images to the trash folder.`
-      : `You remove ${row.ID}. The button asks once more before anything is removed.`,
+      ? `Confirm the removal. Sponge Screener deletes ${row.ID} from the table and moves its frame, crop and track to the trash folder in the data folder.`
+      : `Remove ${row.ID}. The button asks once more first, then Sponge Screener moves its images and track to the trash folder.`,
     attrs: { type: 'button', 'aria-label': armed ? `Confirm removing ${row.ID}` : `Remove ${row.ID}` },
     data: { id: row.ID, armed: String(armed) },
   }, [armed ? 'Remove?' : icon('close')]);
@@ -3367,7 +3367,7 @@ function toLabelNode(row) {
   const clock = row.Timestamp || formatClock(Number(row.TimestampSeconds));
   const jump = el('button', {
     class: 'sighting-jump',
-    title: `You open ${row.FileName} at ${clock}, and the wheel opens on ${row.ID} so you can give it a species.`,
+    title: `Open ${row.FileName} at ${clock} with the wheel on ${row.ID}, ready for a species.`,
     attrs: { type: 'button' },
     data: { id: row.ID },
   }, [
@@ -3720,7 +3720,7 @@ function renderGuide() {
     const tile = el('div', {
       class: 'guide-image',
       attrs: { role: 'button', tabindex: '0' },
-      title: `You enlarge this photo of ${item.name}. Click the large photo or press Escape to shrink it.`,
+      title: `Enlarge the photo of ${item.name}. Click the large photo or press Escape to shrink it again.`,
     }, [img]);
     tile.addEventListener('click', () => enlargeGuideImage(src, item.name));
     tile.addEventListener('keydown', (event) => {
