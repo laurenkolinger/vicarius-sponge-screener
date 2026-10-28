@@ -93,7 +93,7 @@
           <!-- No title here on purpose: a hover tooltip would cover the sponges under the pointer.
                The same words stay on screen in the line under the species strip. -->
           <canvas id="overlay" class="stage-overlay" role="img"
-                  aria-label="Video picture. Click a sponge to pause the video and mark a point, or drag to draw a box around it."></canvas>
+                  aria-label="Click a sponge in the video to pause it and mark a point, or drag to draw a box around it."></canvas>
           <div id="stage-status" class="stage-status" role="status" aria-live="polite">
             <p id="stage-status-text" class="stage-status-text">Pick a video from the list on the left. Then click a sponge and pick its species in the wheel.</p>
             <button id="stage-action" type="button" class="button" hidden
@@ -169,8 +169,7 @@
                     title="Dock the guide in a column beside the video, or let it float over the page. The browser remembers the choice.">
               <svg class="icon" aria-hidden="true"><use href="#i-dock"></use></svg>
             </button>
-            <button id="guide-close" type="button" class="button button-icon" aria-label="Close the species guide"
-                    title="Close the guide. The Escape key and the I key do the same.">
+            <button id="guide-close" type="button" class="button button-icon" aria-label="Close the species guide">
               <svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg>
             </button>
           </div>
@@ -181,8 +180,7 @@
         <div id="help" class="help" role="dialog" aria-label="Keyboard shortcuts" hidden>
           <div class="help-head">
             <h2 class="panel-title">Keyboard shortcuts</h2>
-            <button id="help-close" type="button" class="button button-icon" aria-label="Close the shortcuts card"
-                    title="Close the shortcut card. The Escape key and the ? key do the same.">
+            <button id="help-close" type="button" class="button button-icon" aria-label="Close the shortcuts card">
               <svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg>
             </button>
           </div>
@@ -292,7 +290,7 @@
           <table id="tally" class="tally">
             <thead>
               <tr>
-                <th scope="col" title="The four-letter species code; each row's tooltip gives the scientific name.">Species</th>
+                <th scope="col" title="Species codes are four letters. Each row's tooltip gives the scientific name.">Species</th>
                 <th scope="col" class="num" title="Sightings across all videos. Rows under the target are highlighted.">Seen</th>
                 <th scope="col" class="num" title="The number of videos with at least one sighting of this species.">Videos</th>
                 <th scope="col" class="num" title="The earliest survey year with a sighting of this species.">First</th>

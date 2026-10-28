@@ -759,7 +759,7 @@ function queueNode(video) {
   } else if (job && job.state === 'failed') {
     content = '!';
     label = `Background ${verb} of ${video.name} failed`;
-    title = `The background ${verb} failed. ${endSentence(job.message)} Click to try again.`;
+    title = `The background ${verb} failed, so click to try again. ${endSentence(job.message)}`;
   }
   return el('button', {
     class: 'button button-icon video-queue',
@@ -1252,7 +1252,7 @@ async function openVideo(entry, jump = null) {
   state.conversion = null;
   state.videoStatus = entry.status === 'done' ? 'done' : 'in progress';
   dom.currentVideo.textContent = entry.name;
-  dom.currentVideo.title = `The full bucket key of the open video: ${entry.key}`;
+  dom.currentVideo.title = `The open video's full bucket key is ${entry.key}.`;
   renderBrowser();
   renderSightings();
   renderDone();
@@ -3072,7 +3072,7 @@ function sightingNode(row) {
   const clock = row.Timestamp || formatClock(Number(row.TimestampSeconds));
   const title = status === 'unlabeled'
     ? `Jump to ${row.ID} at ${clock} and open the wheel on it to give it a species. ${row.Notes || ''}`
-    : `Jump to ${row.ID} at ${clock}; the video pauses there. ${name}. ${row.Notes || ''}`;
+    : `Jump to ${row.ID} at ${clock}, marked ${name}; the video pauses there. ${row.Notes || ''}`;
 
   const jump = el('button', {
     class: 'sighting-jump',

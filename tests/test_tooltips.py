@@ -22,6 +22,12 @@ TITLE_ATTRIBUTE = re.compile(r'\btitle="([^"]*)"')
 SCRIPT_TITLE = re.compile(r"""title(?::|\s=)\s*(?:[\w.]+\s*(?:===\s*'[^']*')?\s*\n?\s*\?\s*)?(['`])((?:(?!\1).)*)\1""", re.S)
 SCRIPT_ELSE_ARM = re.compile(r"""\n\s*:\s*(['`])((?:(?!\1).)*)\1[,;]""", re.S)
 BANNED_OPENING = re.compile(r"^\s*you\b", re.IGNORECASE)
+# A sentence ends at ".", "!" or "?" right after a non-space character and followed by a
+# space or the end; "settings.json", "1.5x" and the key name in "The ? key" hold no
+# sentence end. Run-time tooltips append data (a note, an error message) after their
+# fixed text, so only the page's own tooltips are counted.
+SENTENCE_END = re.compile(r"(?<=\S)[.!?](?:\s|$)")
+MAX_SENTENCES = 2
 BANNED_PHRASES = ("this mac", "on this screen", "above", "this tab", "this window")
 
 
@@ -49,3 +55,8 @@ def test_no_tooltip_opens_with_you_or_points_at_the_screen(tooltip):
     lowered = tooltip.lower()
     assert not any(phrase in lowered for phrase in BANNED_PHRASES), tooltip
     assert chr(0x2014) not in tooltip and chr(0x2013) not in tooltip, tooltip
+
+
+@pytest.mark.parametrize("tooltip", page_tooltips())
+def test_every_page_tooltip_is_one_or_two_sentences(tooltip):
+    assert 1 <= len(SENTENCE_END.findall(tooltip.strip())) <= MAX_SENTENCES, tooltip
