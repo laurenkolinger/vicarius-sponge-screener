@@ -876,7 +876,13 @@ def test_stress_readers_eviction_prefetch_and_failures_together(fake, make_relay
     bodies = {key: _body(23 * CHUNK + 7 * index, seed=index) for index, key in enumerate(keys)}
     for key, body in bodies.items():
         fake.put(key, body)
-    relay = make_relay(workers=5, read_ahead=4, retries=3, cap_bytes=30 * CHUNK, keep_seconds=0)
+    # Four tries, not three: the disturber arms a 500 for some key every few
+    # milliseconds for 2 s, so with three tries (at 0, 0.5 and 1.5 s) one chunk
+    # could meet an armed failure three times and fail for real, which made the
+    # test fail on a fast many-core machine. The fourth try comes 3.5 s after
+    # the first, always after the disturber has stopped, so every chunk that a
+    # reader still wants succeeds.
+    relay = make_relay(workers=5, read_ahead=4, retries=4, cap_bytes=30 * CHUNK, keep_seconds=0)
     stop_at = time.time() + 2.0
     problems = []
     reads = []
