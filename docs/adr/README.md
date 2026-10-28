@@ -1,8 +1,8 @@
-# Decision records for {module_name}
+# Decision records for sponge_screener
 
 Last updated: 2026-09-02 (LO)
 
-This folder holds the architecture decision records (ADRs) for the `{module_name}` module: short notes that record that a decision was made and why, so a future reader does not undo it by accident. Format rules for every level are in `/mnt/rip/vicarius_drive/docs/agents/domain.md`; the rule that triggers a record is in the `Every change batch` section of `/mnt/rip/vicarius_drive/CLAUDE.md` under "Decision records".
+This folder holds the architecture decision records (ADRs) for the `sponge_screener` module: short notes that record that a decision was made and why, so a future reader does not undo it by accident. Format rules for every level are in `/mnt/rip/vicarius_drive/docs/agents/domain.md`; the rule that triggers a record is in the `Every change batch` section of `/mnt/rip/vicarius_drive/CLAUDE.md` under "Decision records".
 
 ## Numbering
 

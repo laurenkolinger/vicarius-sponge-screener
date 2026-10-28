@@ -1,24 +1,48 @@
-<!-- template stub: remove this line when the glossary has content, then add this module to /mnt/rip/vicarius_drive/CONTEXT-MAP.md -->
-# {module_name}: glossary
+# sponge_screener: glossary
 
-Last updated: 2026-09-02 (LO)
+Last updated: 2026-10-27 (LO)
 
-This file is the vocabulary of the `{module_name}` module: the words its code, UI, docs and log rows use for the things it handles, one meaning each. Agents read it before naming anything in this clone. The platform glossary at `/mnt/rip/vicarius_drive/CONTEXT.md` covers the terms every module shares, and `/mnt/rip/vicarius_drive/CONTEXT-MAP.md` indexes every glossary on the drive. Format rules for all of them are in `/mnt/rip/vicarius_drive/docs/agents/domain.md`.
+This file is the vocabulary of the `sponge_screener` module (Sponge Screener): the words its code, page, docs and export package use for the things it handles, one meaning each. The platform glossary at `/mnt/rip/vicarius_drive/CONTEXT.md` covers the terms every module shares (run folder, descriptor, lock, initials, purpose), and `/mnt/rip/vicarius_drive/CONTEXT-MAP.md` indexes every glossary on the drive. Format rules: `/mnt/rip/vicarius_drive/docs/agents/domain.md`.
 
-## How to fill this file
+## Screening
 
-- What belongs: terms specific to this module's own domain, meaning the objects it takes in, produces, tracks or displays (a transect record, a mask, a tile, a batch, a colony) and the states those objects move through. If a word would confuse a reader who already knows the platform glossary, it belongs here.
-- What does not belong: general programming concepts (timeout, retry, cache, error type, worker thread), platform-wide terms already defined in `/mnt/rip/vicarius_drive/CONTEXT.md` (run folder, descriptor, EML sidecar, lock, initials, purpose), and anything defined by the TCRMP 3D registry at `/mnt/rip/vicarius_drive/vicarius/_METADATA/3d/CONTEXT.md`. Point at the other glossary instead of restating it.
-- One or two sentences per term. Define what the thing is, not what the code does with it. Be opinionated: when several words exist for one concept, pick one and list the rest under `_Avoid_`.
-- Mark collisions with `_Avoid_`. When a word means something different in another module or at platform level, name the other meaning in the `_Avoid_` line so a reader knows which sense is in force here, for example `_Avoid_: mask (the reef_point_seg per-image mask)`.
-- Group terms under subheadings when natural clusters appear; a flat list is fine when every term belongs to one area.
-- Stamp `Last updated: YYYY-MM-DD (INITIALS)` near the top on every edit.
-- When the first real term is in, delete the stub comment on line 1 and add a line for this module to `/mnt/rip/vicarius_drive/CONTEXT-MAP.md`.
+**Sighting**:
+One sponge a person marked in one video at one moment, with its species: one row in `observations.csv` with `LabelStatus` `labeled`, plus its frame and its crop. Its ID (`ID001`, `ID002`, ...) counts up within one screening dataset.
+_Avoid_: observation (the code's word for any row, Later points included), detection (a model's output), annotation
 
-## Language
+**Later point**:
+A sponge a person marked without naming its species yet: a full row with `LabelStatus` `unlabeled` and `LATER` in place of the species code in its file names. It waits in the To label list and stays out of the tally, the Done status and the export.
+_Avoid_: unlabeled sighting, placeholder
 
-The entry below is a worked example of the shape. Replace it with this module's first real term.
+**Mark**:
+The point or box a person draws on the picture to start a sighting; it rides along the sighting's track afterwards.
+_Avoid_: click, annotation
 
-**Batch**:
-The set of input files this module processes in one run, listed in the run's `analysis_params.yaml`; each input file yields one output subfolder named after the file's stem.
-_Avoid_: job, queue, input set
+**Pinned species**:
+Up to ten species on the number keys 1 to 9 and 0, the species a person screens a video for. A done video records them as its target species.
+_Avoid_: favorites, shortcuts
+
+**Done video**:
+A video a person marked fully screened. Every pinned species with no sighting in a done video counts as truly absent from it; a video with Later points cannot be marked done.
+_Avoid_: finished, complete, reviewed
+
+**Quadrant**:
+The quarter of the frame the sponge sits in (`TOPLEFT`, `TOPRIGHT`, `BOTTOMLEFT`, `BOTTOMRIGHT`), from the point or the box center. It appears in file names and, in words, at the start of the Notes column.
+
+**Track**:
+The path of one sighting's sponge through its video, from about 12 s before to 15 s after the sighting, as points `[t, x, y, score]` in `tracks/ID###.json`. The score is the likeness of the tracked patch to the sighting's patch, from 0 to 1.
+_Avoid_: trajectory, path
+
+## Datasets
+
+**Screening dataset**:
+One set of sightings, Later points, screened videos, tracks and settings with its own ID counter. Under VICARIUS it is one run folder; standalone it is the `data/` folder.
+_Avoid_: project, session, campaign
+
+**Export package**:
+A dated folder `spongeGroundTruth_<YYYYMMDD>` with `observations.csv`, `videos_screened.csv`, `tracks.csv`, every frame and crop of the labeled sightings, and a README; the shape of the January 2026 package sent to OnDeck AI.
+_Avoid_: export, bundle, delivery
+
+**Annotator**:
+The initials written into every sighting and every screened-video row, kept per screening dataset in `settings.json`. Under VICARIUS the field starts on the initials the person signed in with.
+_Avoid_: reviewer, user, operator
