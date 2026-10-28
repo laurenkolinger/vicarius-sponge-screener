@@ -7,9 +7,13 @@ counter, a settings file, or a tracking queue.
 
 settings.json is read again whenever the file on disk changes (its inode,
 modification time or size), because one server lives for days and a person
-may edit export_root by hand between sightings.
+may edit export_root by hand between sightings. A re-read that finds a file
+that is not a JSON object (a typo, or an editor caught halfway through a
+write) keeps the settings in memory and leaves the file where it is; only the
+first open sets an unreadable file aside, as load_settings does.
 """
 
+import json
 import sys
 import threading
 from pathlib import Path
@@ -76,6 +80,9 @@ class Workspace:
         self._species = list(species)
         self.store = ObservationStore(self.data_dir, self._species, site_names)
         folder = self.data_dir.stat()
+        # A folder made again under the same name usually gets a new inode; when
+        # the disk reuses the old one, the settings re-read still sees the new
+        # folder's missing or different settings.json.
         self.identity = (folder.st_dev, folder.st_ino)
         self._settings_path = self.data_dir / SETTINGS_FILE
         self._default_export_root = default_export_root
@@ -101,17 +108,40 @@ class Workspace:
     def _refresh(self) -> None:
         """Read settings.json again when the file changed on disk; call with the settings lock held.
 
-        A file that cannot be read keeps the settings in memory and prints one
-        stderr line, so a passing read error never stops a sighting.
+        The file's signature is taken once, before the read, so an edit made
+        during the read is caught by the next call. A file that cannot be read,
+        or that is not a JSON object, keeps the settings in memory, stays where
+        it is, and prints one stderr line, so a hand edit in progress never
+        resets the pins or the annotator.
         """
         try:
             signature = self._signature()
             if signature == self._settings_signature:
                 return
+            self._settings_signature = signature
+            if signature is not None and not self._parses_as_object():
+                sys.stderr.write(
+                    f"settings: {self._settings_path} is not a JSON object right now; keeping the settings in memory "
+                    "until the file is fixed\n"
+                )
+                return
             self._settings = load_settings(self._settings_path, self._species, self._default_export_root)
-            self._settings_signature = self._signature()
         except OSError as error:
             sys.stderr.write(f"settings: could not read {self._settings_path} ({error}); keeping the settings in memory\n")
+
+    def _parses_as_object(self) -> bool:
+        """Say whether settings.json holds a JSON object right now.
+
+        Returns:
+            True for a JSON object; False for anything else, including text that is not UTF-8.
+
+        Raises:
+            OSError: When the file cannot be read.
+        """
+        try:
+            return isinstance(json.loads(self._settings_path.read_bytes().decode("utf-8")), dict)
+        except (ValueError, RecursionError):
+            return False
 
     def settings(self) -> Settings:
         """Return a copy of the current settings, read again first when settings.json changed on disk."""

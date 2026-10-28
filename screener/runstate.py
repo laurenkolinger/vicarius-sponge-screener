@@ -12,8 +12,12 @@ A write holds the exclusive lock on ``.project.json.lock`` beside the file,
 the lock VICARIUS's own writer takes when a person opens the run, then reads
 the file, changes the parsed object, writes a temp file in the same folder and
 swaps it in with ``os.replace``, so a crash leaves the old file or the new
-one. A file that is missing or cannot be parsed is reported in one stderr line
-and left alone: run bookkeeping never stops a sighting or an export.
+one. Each run file has its own lock in this process, and the file lock is
+asked for again for at most LOCK_WAIT_SECONDS; a run whose lock stays taken
+skips the write and reports it, so one stuck run never stalls another. A step
+that already reads as wanted is not written at all. A file that is missing or
+cannot be parsed is reported in one stderr line and left alone: run
+bookkeeping never stops a sighting or an export.
 """
 
 import fcntl
@@ -22,6 +26,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
@@ -34,14 +39,62 @@ EXPORT_STEP_NAME = "Export the package"
 RUNNING = "running"
 COMPLETED = "completed"
 LOCK_FILE = ".project.json.lock"
+# How long a write waits for the run's file lock, and how often it asks.
+LOCK_WAIT_SECONDS = 5.0
+LOCK_POLL_SECONDS = 0.05
 JSON_INDENT = 2
 LOG_PREFIX = "runstate:"
 FILE_MODE = 0o644
 
-# One lock per process for the screener's own threads, and the file lock that
+# One lock per run file for the screener's own threads, and the file lock that
 # VICARIUS takes too, because a person can open the run from its card while a
 # window on it is saving.
-_write_lock = threading.Lock()
+_path_locks: Dict[str, threading.Lock] = {}
+_path_locks_guard = threading.Lock()
+
+
+def _lock_for(path: Path) -> threading.Lock:
+    """Return this process's lock for one project.json, made on first use.
+
+    Args:
+        path: The project.json file.
+
+    Returns:
+        The same lock object for every call with the same absolute path.
+    """
+    key = os.path.abspath(path)
+    with _path_locks_guard:
+        lock = _path_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _path_locks[key] = lock
+        return lock
+
+
+def _take_file_lock(descriptor: int, path: Path) -> bool:
+    """Take the run's exclusive file lock, asking again until LOCK_WAIT_SECONDS pass.
+
+    Args:
+        descriptor: The open lock file.
+        path: The project.json file, for messages.
+
+    Returns:
+        True when the lock is held; False (after one stderr line) when another
+        process kept it for LOCK_WAIT_SECONDS or the lock call failed.
+    """
+    deadline = time.monotonic() + LOCK_WAIT_SECONDS
+    while True:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                _report(path, f"another process kept {path.parent / LOCK_FILE} for {LOCK_WAIT_SECONDS:g} s")
+                return False
+            time.sleep(LOCK_POLL_SECONDS)
+        except OSError as error:
+            _report(path, f"could not take {path.parent / LOCK_FILE} ({error})")
+            return False
 
 
 def ast_now() -> str:
@@ -131,14 +184,15 @@ def _update(path: Path, change: Callable[[Dict[str, Any]], bool], now: str) -> b
     Returns:
         True when the file was rewritten.
     """
-    with _write_lock:
+    with _lock_for(path):
         try:
             lock_handle = open(path.parent / LOCK_FILE, "a+")
         except OSError as error:
             _report(path, f"could not open the lock file {path.parent / LOCK_FILE} ({error})")
             return False
         with lock_handle:
-            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            if not _take_file_lock(lock_handle.fileno(), path):
+                return False
             try:
                 document = _read(path)
                 if document is None or not change(document):
@@ -165,6 +219,29 @@ def _steps(document: Dict[str, Any]) -> Dict[str, Any]:
     return steps
 
 
+def _step_reads(path: Path, number: int, wanted: Dict[str, str]) -> bool:
+    """Say, without any lock, whether project.json already holds the wanted step.
+
+    A step that already reads as wanted needs no write, so a video open on a
+    run whose screening step is running takes no lock at all. A file that
+    cannot be read answers False, and the locked write reports it.
+
+    Args:
+        path: The project.json file.
+        number: The step number.
+        wanted: ``{"name": ..., "status": ...}``.
+
+    Returns:
+        True when the step is already there as wanted.
+    """
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError):
+        return False
+    steps = document.get("steps") if isinstance(document, dict) else None
+    return isinstance(steps, dict) and steps.get(str(number)) == wanted
+
+
 def mark_step(path: Path, number: int, name: str, status: str, now: Optional[str] = None) -> bool:
     """Set one step's name and status, writing only when that changes something.
 
@@ -188,6 +265,8 @@ def mark_step(path: Path, number: int, name: str, status: str, now: Optional[str
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"{label}: expected text, got {value!r}")
     wanted = {"name": name, "status": status}
+    if _step_reads(Path(path), number, wanted):
+        return False
 
     def change(document: Dict[str, Any]) -> bool:
         steps = _steps(document)

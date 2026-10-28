@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from datetime import date
 from pathlib import Path
 
@@ -607,3 +608,82 @@ def test_an_encoded_header_cannot_smuggle_a_path(vicarius):
 def test_a_relative_project_dir_is_refused(runs_root):
     with pytest.raises(ValueError, match="not an absolute path"):
         RunFolders(runs_root).name_for_project_dir(f"inprocess/{RUN_A}")
+
+
+# ----- findings of the second review -----
+
+
+class HeldLock:
+    """A second process holding one run's .project.json.lock until stopped."""
+
+    def __init__(self, folder: Path) -> None:
+        """Start the holder and wait until it has the lock."""
+        self.process = subprocess.Popen(
+            [sys.executable, "-c", LOCK_HOLDER, str(folder / ".project.json.lock")],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        )
+        assert self.process.stdout.readline().strip() == "locked"
+
+    def stop(self) -> None:
+        """Release the lock and end the holder."""
+        self.process.kill()
+        self.process.wait(timeout=30)
+
+
+def test_a_bad_hand_edit_keeps_the_settings_in_memory_and_the_file_in_place(vicarius, runs_root, capsys):
+    set_initials(vicarius, RUN_A, "LO")
+    path = runs_root / RUN_A / "settings.json"
+    good = path.read_text(encoding="utf-8")
+    path.write_text(good[: len(good) // 2], encoding="utf-8")
+    species = vicarius.client.get("/api/species", headers=in_run(RUN_A)).json()
+    assert species["annotator"] == "LO"
+    assert path.read_text(encoding="utf-8") == good[: len(good) // 2]
+    assert not [item for item in (runs_root / RUN_A).iterdir() if ".corrupt-" in item.name]
+    assert "not a JSON object right now" in capsys.readouterr().err
+    document = json.loads(good)
+    document["annotator"] = "MK"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    assert vicarius.client.get("/api/species", headers=in_run(RUN_A)).json()["annotator"] == "MK"
+
+
+def test_an_empty_settings_file_mid_write_does_not_reset_the_pins(vicarius, runs_root):
+    set_initials(vicarius, RUN_A, "LO")
+    pins = {key: None for key in "1234567890"}
+    pins["1"] = "XMUT"
+    assert vicarius.client.post("/api/settings", {"pins": pins}, headers=in_run(RUN_A)).status == 200
+    (runs_root / RUN_A / "settings.json").write_text("", encoding="utf-8")
+    answer = vicarius.client.get("/api/species", headers=in_run(RUN_A)).json()
+    assert answer["pins"]["1"] == "XMUT" and answer["annotator"] == "LO"
+
+
+def test_a_stuck_lock_on_one_run_never_stalls_another(runs_root):
+    holder = HeldLock(runs_root / RUN_A)
+    try:
+        started = time.monotonic()
+        assert runstate.mark_step(runs_root / RUN_B / "project.json", 1, "Screen videos", "running") is True
+        assert time.monotonic() - started < LOCK_WAIT_SECONDS
+    finally:
+        holder.stop()
+
+
+def test_a_lock_kept_too_long_skips_the_write_and_reports(runs_root, monkeypatch, capsys):
+    monkeypatch.setattr(runstate, "LOCK_WAIT_SECONDS", 0.3)
+    holder = HeldLock(runs_root / RUN_A)
+    try:
+        assert runstate.record_export(runs_root / RUN_A / "project.json", "LO", "spongeGroundTruth_20261027", 1) is False
+    finally:
+        holder.stop()
+    assert "another process kept" in capsys.readouterr().err
+    assert len(project(runs_root / RUN_A)["access_log"]) == 1
+
+
+def test_a_step_that_already_reads_running_takes_no_lock(runs_root):
+    path = runs_root / RUN_A / "project.json"
+    runstate.mark_step(path, 1, "Screen videos", "running")
+    holder = HeldLock(runs_root / RUN_A)
+    try:
+        started = time.monotonic()
+        assert runstate.mark_step(path, 1, "Screen videos", "running") is False
+        assert time.monotonic() - started < LOCK_WAIT_SECONDS
+    finally:
+        holder.stop()

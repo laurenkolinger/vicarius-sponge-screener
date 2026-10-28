@@ -156,7 +156,9 @@ const STORAGE = {
 };
 const IDLE_TEXT = 'Pick a video from the list on the left. Then click a sponge and pick its species in the wheel.';
 const NO_RUN_TEXT = 'Open a run from the Sponge Screener card on the VICARIUS desktop.';
-const NO_INITIALS_TEXT = 'Type your initials in Annotator before you log sightings.';
+const NO_INITIALS_TEXT = 'Type your initials in Annotator before you open a video.';
+/** The keys that still work while the page has no run: the shortcut card and closing it. */
+const NO_RUN_KEYS = new Set(['?', 'Escape']);
 /** The controls that call the server, disabled while the page has no run to work in. */
 const NO_RUN_DISABLED = [
   'annotator', 'exportButton', 'guideToggle', 'search', 'refresh', 'slower', 'faster', 'grid', 'deckToggle', 'done', 'next',
@@ -219,6 +221,8 @@ const state = {
 /** Timers, the live drag, and other values that are not plain page data. */
 const runtime = {
   loadToken: 0,
+  annotatorSave: null,
+  annotatorSaveValue: '',
   queryEditedAt: -Infinity,
   deleteArmedAt: null,
   guideFollowTimer: null,
@@ -1218,6 +1222,11 @@ function stopVideoTimers() {
  * @returns {Promise<void>} Settles after the open call and the sightings call returned.
  */
 async function openVideo(entry, jump = null) {
+  if (!state.annotator && dom.annotator.value.trim()) {
+    // Initials typed and not saved yet: a click on a video blurs the field, and its save
+    // is still on the way when the click arrives.
+    await saveAnnotator();
+  }
   if (!state.annotator) {
     // The server records who opened a video and refuses without initials, so a
     // video opened now would never get its screening row.
@@ -3435,10 +3444,31 @@ async function jumpToRow(row) {
 // ------------------------------------------------- settings, export, and help
 
 /**
+ * Send the annotator field to the server, once per value: a second call for the value
+ * already on its way (the field's change event and a video click right after it) waits for
+ * that save instead of sending another.
+ * @returns {Promise<void>} Settles after the server stored or refused the value.
+ */
+function saveAnnotator() {
+  const value = dom.annotator.value.trim();
+  if (runtime.annotatorSave && runtime.annotatorSaveValue === value) {
+    return runtime.annotatorSave;
+  }
+  const save = sendAnnotator().finally(() => {
+    if (runtime.annotatorSave === save) {
+      runtime.annotatorSave = null;
+    }
+  });
+  runtime.annotatorSave = save;
+  runtime.annotatorSaveValue = value;
+  return save;
+}
+
+/**
  * Send the annotator field to the server and show the server's verdict.
  * @returns {Promise<void>} Settles after the server stored or refused the value.
  */
-async function saveAnnotator() {
+async function sendAnnotator() {
   const value = dom.annotator.value.trim();
   if (value === state.annotator) {
     dom.annotator.value = state.annotator;
@@ -3805,6 +3835,10 @@ function onKeyDown(event) {
     return;
   }
   const key = keyFromEvent(event.key, event.code, event.shiftKey);
+  if (document.body.dataset.run === 'none' && !NO_RUN_KEYS.has(key)) {
+    // The buttons are disabled without a run, so their shortcuts are too.
+    return;
+  }
   if (key !== 'Backspace' && key !== 'Delete') {
     // Any other key disarms a deletion that waits for its second press.
     wheel.disarmDelete();
