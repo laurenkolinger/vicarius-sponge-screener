@@ -13,6 +13,10 @@
  * own node tests; wheel_view.js draws the wheel. This file wires those pieces to the DOM,
  * the video element, and the HTTP contract of screener/server.py. Server text reaches the
  * DOM through textContent only.
+ *
+ * Under VICARIUS (the server says it keeps runs), the page reads its run folder from
+ * ?project_dir=, asks the server for the run's name, and names that run on every call;
+ * vicarius_run.js holds those rules and the signed-in initials rule.
  */
 
 import {
@@ -79,6 +83,14 @@ import {
 import { createWheel } from './wheel_view.js';
 import { createScrubber } from './scrub.js';
 import { markAt, marksAt, readTrackAnswer } from './track_math.js';
+import {
+  RUN_HEADER,
+  initialsFromSearch,
+  projectDirFromSearch,
+  startingInitials,
+  upperCaseAsTyped,
+  withRun,
+} from './vicarius_run.js';
 
 // ------------------------------------------------------------------ constants
 
@@ -143,6 +155,15 @@ const STORAGE = {
   speed: 'screener.speed.v2',
 };
 const IDLE_TEXT = 'Pick a video from the list on the left. Then click a sponge and pick its species in the wheel.';
+const NO_RUN_TEXT = 'Open a run from the Sponge Screener card on the VICARIUS desktop.';
+const NO_INITIALS_TEXT = 'Type your initials in Annotator before you open a video.';
+/** The keys that still work while the page has no run: the shortcut card and closing it. */
+const NO_RUN_KEYS = new Set(['?', 'Escape']);
+/** The controls that call the server, disabled while the page has no run to work in. */
+const NO_RUN_DISABLED = [
+  'annotator', 'exportButton', 'guideToggle', 'search', 'refresh', 'slower', 'faster', 'grid', 'deckToggle', 'done', 'next',
+  'fullscreen',
+];
 
 // ---------------------------------------------------------------------- state
 
@@ -153,6 +174,7 @@ const IDLE_TEXT = 'Pick a video from the list on the left. Then click a sponge a
  */
 const state = {
   mode: 'screening',
+  run: '',
   key: null,
   name: null,
   source: null,
@@ -199,6 +221,8 @@ const state = {
 /** Timers, the live drag, and other values that are not plain page data. */
 const runtime = {
   loadToken: 0,
+  annotatorSave: null,
+  annotatorSaveValue: '',
   queryEditedAt: -Infinity,
   deleteArmedAt: null,
   guideFollowTimer: null,
@@ -254,7 +278,8 @@ function byId(id) {
 
 const dom = {
   currentVideo: byId('current-video'),
-  annotator: byId('annotator'),
+  annotator: byId('annotator-initials'),
+  runName: byId('run-name'),
   exportButton: byId('export'),
   helpToggle: byId('help-toggle'),
   help: byId('help'),
@@ -434,6 +459,9 @@ async function request(method, path, body) {
   if (method !== 'GET') {
     options.headers[MUTATION_HEADER] = '1';
   }
+  if (state.run) {
+    options.headers[RUN_HEADER] = encodeURIComponent(state.run);
+  }
   if (body !== undefined) {
     options.headers['Content-Type'] = 'application/json';
     options.body = JSON.stringify(body);
@@ -606,7 +634,7 @@ function renderBreadcrumb() {
     const button = el('button', {
       class: 'crumb',
       text: crumb.name,
-      title: `You open the folder ${crumb.name}.`,
+      title: `Open the folder ${crumb.name} in the bucket.`,
       attrs: { type: 'button' },
       data: { prefix: crumb.prefix },
     });
@@ -631,7 +659,7 @@ function upNode(parent) {
   const name = crumbs[crumbs.length - 1].name;
   const button = el('button', {
     class: 'folder-row folder-up',
-    title: `You go up one folder, to ${name}.`,
+    title: `Go up one folder, to ${name}.`,
     attrs: { type: 'button' },
     data: { prefix: parent },
   }, [icon('up'), el('span', { text: `Up to ${name}` })]);
@@ -646,7 +674,7 @@ function upNode(parent) {
 function folderNode(folder) {
   const button = el('button', {
     class: 'folder-row',
-    title: `You open the folder ${folder.name}.`,
+    title: `Open the folder ${folder.name} in the bucket.`,
     attrs: { type: 'button' },
     data: { prefix: folder.prefix },
   }, [icon('folder'), el('span', { text: folder.name })]);
@@ -673,18 +701,18 @@ function videoNode(video) {
     el('span', {
       class: 'badge',
       text: statusLabel(status, video.sightings),
-      title: 'new: nobody has opened this video. in progress: it was opened, and the number counts its sightings. done: you marked it fully screened.',
+      title: 'New means nobody has opened the video, and in progress means it was opened, with the number counting its sightings. Done means a person marked it fully screened.',
       data: { status },
     }),
     later > 0 ? el('span', {
       class: 'video-later',
       text: `· ${later} later`,
-      title: 'Points in this video that you saved for later. You give each one a species from the To label list.',
+      title: 'Points saved for later in the video, each still waiting for a species. Give them species from the To label list.',
     }) : '',
     el('span', {
       class: 'format',
       text: format.text,
-      title: 'plays now: Chrome plays this format directly. needs conversion: the server converts the file first, which takes a few minutes.',
+      title: 'Plays now means Chrome plays the format directly. Needs conversion means Sponge Screener converts the file with FFmpeg first, which takes a few minutes.',
       data: { format: format.kind },
     }),
   ]);
@@ -692,7 +720,7 @@ function videoNode(video) {
   const size = formatBytes(video.size);
   const open = el('button', {
     class: 'video-open',
-    title: `You open ${video.name}${size ? ` (${size})` : ''}. It plays from where you left it, minus 2 seconds.`,
+    title: `Open ${video.name}${size ? ` (${size})` : ''}. It plays from where it was left, minus 2 seconds.`,
     attrs: { type: 'button' },
     data: { key: video.key },
   }, [el('span', { class: 'video-name' }, nameNodes), meta]);
@@ -716,22 +744,22 @@ function queueNode(video) {
   const job = state.queue[video.key];
   const verb = video.playable ? 'download' : 'conversion';
   let title = video.playable
-    ? 'You queue this video for background download, so it plays later without waiting.'
-    : 'You queue this video for background conversion. The server downloads it and converts it so Chrome can play it.';
+    ? 'Queue the video for background download into the cache folder, so it plays later without waiting.'
+    : 'Queue the video for background conversion. Sponge Screener downloads it and converts it with FFmpeg so Chrome can play it.';
   let content = icon('queue');
   let label = `Queue ${video.name} for background ${verb}`;
   if (job && job.state === 'working') {
     content = percentText(job.fraction);
     label = `Background ${verb} of ${video.name}: ${percentText(job.fraction)}`;
-    title = `The server is working on this video in the background: ${percentText(job.fraction)}.`;
+    title = `Sponge Screener is working on the video in the background: ${percentText(job.fraction)}.`;
   } else if (job && job.state === 'ready') {
     content = icon('check');
-    label = `${video.name} is ready on this Mac`;
-    title = 'This video is ready on this Mac. It plays without waiting.';
+    label = `${video.name} is ready in the cache folder`;
+    title = 'The video is ready in the cache folder and plays without waiting.';
   } else if (job && job.state === 'failed') {
     content = '!';
     label = `Background ${verb} of ${video.name} failed`;
-    title = `The background ${verb} failed. ${endSentence(job.message)} You can click to try again.`;
+    title = `The background ${verb} failed, so click to try again. ${endSentence(job.message)}`;
   }
   return el('button', {
     class: 'button button-icon video-queue',
@@ -805,7 +833,7 @@ async function queueVideo(key) {
     return;
   }
   if (current && current.state === 'ready') {
-    toast('This video is already on this Mac.', 'info');
+    toast('This video is already in the cache folder.', 'info');
     return;
   }
   const kind = entry.playable ? 'prefetch' : 'convert';
@@ -922,8 +950,8 @@ function renderPins() {
     const choose = el('button', {
       class: 'pin-choose',
       title: code
-        ? `You save the mark on screen as ${name || code} and the video stays paused. The ${slot} key does the same, and Shift plays on.`
-        : `Key ${slot} has no species yet. You highlight a species in the filter list, then click the pin in this corner.`,
+        ? `Save the open mark as ${name || code}; the video stays paused. The ${slot} key does the same, and Shift with it plays on.`
+        : `Key ${slot} holds no species yet. Highlight a species in the filter list, then click the pin in the corner of the key.`,
       attrs: {
         type: 'button',
         'aria-label': code ? `Key ${slot}: ${code}, ${name}` : `Key ${slot}: empty`,
@@ -936,7 +964,7 @@ function renderPins() {
     ]);
     const assign = el('button', {
       class: 'pin-assign',
-      title: `You pin the species highlighted in the filter list to key ${slot}. The server remembers your pins.`,
+      title: `Pin the species highlighted in the filter list to key ${slot}. Sponge Screener keeps the pins in settings.json in the data folder.`,
       attrs: { type: 'button', 'aria-label': `Pin the highlighted species to key ${slot}` },
       data: { slot },
     }, [icon('pin')]);
@@ -1091,8 +1119,8 @@ function renderMatches() {
     return el('li', {
       class: 'match',
       title: state.mode === 'marking'
-        ? `You save the mark on screen as ${species ? species.name : code} and the video stays paused.`
-        : `You hold ${species ? species.name : code} ready for pinning. Then you click the pin in the corner of a number key.`,
+        ? `Save the open mark as ${species ? species.name : code}; the video stays paused.`
+        : `Hold ${species ? species.name : code} ready for pinning, then click the pin in the corner of a number key to put it there.`,
       attrs: { role: 'option', id: `match-${code}`, 'aria-selected': String(selected) },
       data: { code },
     }, children);
@@ -1185,7 +1213,8 @@ function stopVideoTimers() {
 
 /**
  * Open a video: tell the server, load its sightings and their tracks, and start playback,
- * through conversion when Chrome cannot play the format.
+ * through conversion when Chrome cannot play the format. Without initials in Annotator the
+ * video stays closed and the field is marked, because the server records who opened it.
  * @param {object} entry A catalog video entry ({key, name, playable, converted, status}).
  * @param {?{key: string, time: number, row: object}} [jump] A point to land on once the video
  *   loads: the video seeks there instead of the remembered position, pauses, and opens the
@@ -1193,6 +1222,18 @@ function stopVideoTimers() {
  * @returns {Promise<void>} Settles after the open call and the sightings call returned.
  */
 async function openVideo(entry, jump = null) {
+  if (!state.annotator && dom.annotator.value.trim()) {
+    // Initials typed and not saved yet: a click on a video blurs the field, and its save
+    // is still on the way when the click arrives.
+    await saveAnnotator();
+  }
+  if (!state.annotator) {
+    // The server records who opened a video and refuses without initials, so a
+    // video opened now would never get its screening row.
+    askForInitials();
+    dom.annotator.focus();
+    return;
+  }
   scrubber.stop();
   if (state.pending) {
     endMark();
@@ -1211,7 +1252,7 @@ async function openVideo(entry, jump = null) {
   state.conversion = null;
   state.videoStatus = entry.status === 'done' ? 'done' : 'in progress';
   dom.currentVideo.textContent = entry.name;
-  dom.currentVideo.title = `The video that is open now: ${entry.key}`;
+  dom.currentVideo.title = `The open video's full bucket key is ${entry.key}.`;
   renderBrowser();
   renderSightings();
   renderDone();
@@ -1392,7 +1433,7 @@ function followConversion(token, status) {
 function showConversionFailure(token, message) {
   setStatus('failed', `The conversion failed, so this video cannot play yet. ${endSentence(message)}`, {
     label: 'Convert again',
-    title: 'You ask the server to convert this video again.',
+    title: 'Convert the open video again. Sponge Screener queues it behind any conversion already running.',
     run: () => startConversion(token, 'You asked for another try.'),
   });
 }
@@ -1457,7 +1498,7 @@ async function onVideoError() {
   } else {
     setStatus('failed', `This video did not play, even as a converted copy.${detail}`, {
       label: 'Try again',
-      title: 'You load this video again from the server.',
+      title: 'Load the converted copy of the open video again from the server.',
       run: () => playSource('converted'),
     });
   }
@@ -2825,7 +2866,7 @@ function renderUnsaved() {
   }
   runtime.unsavedToast = toast(message, 'error', Infinity, {
     label: 'Retry',
-    title: 'You send every unsaved sighting to the server again. The page kept their frames and crops, so nothing is lost.',
+    title: 'Send every unsaved sighting to the server again. The page still holds their frames and crops, so each one saves in full.',
     run: retryUnsaved,
   });
 }
@@ -3005,7 +3046,7 @@ function cropThumb(row) {
   const thumb = el('img', {
     class: 'sighting-thumb',
     attrs: {
-      src: `/media/crops/${encodeURIComponent(row.CropFileName || '')}`,
+      src: withRun(`/media/crops/${encodeURIComponent(row.CropFileName || '')}`, state.run),
       alt: '',
       width: '44',
       height: '44',
@@ -3030,8 +3071,8 @@ function sightingNode(row) {
   const name = species ? species.name : row['Sponge Type'] || row.SpeciesCode;
   const clock = row.Timestamp || formatClock(Number(row.TimestampSeconds));
   const title = status === 'unlabeled'
-    ? `You jump to ${row.ID} at ${clock}, and the wheel opens on it so you can give it a species. ${row.Notes || ''}`
-    : `You jump to ${row.ID} at ${clock} and the video pauses there. ${name}. ${row.Notes || ''}`;
+    ? `Jump to ${row.ID} at ${clock} and open the wheel on it to give it a species. ${row.Notes || ''}`
+    : `Jump to ${row.ID} at ${clock}, marked ${name}; the video pauses there. ${row.Notes || ''}`;
 
   const jump = el('button', {
     class: 'sighting-jump',
@@ -3053,8 +3094,8 @@ function sightingNode(row) {
   const remove = el('button', {
     class: 'button button-icon sighting-delete',
     title: armed
-      ? `You confirm: the server removes ${row.ID} and moves its two images to the trash folder.`
-      : `You remove ${row.ID}. The button asks once more before anything is removed.`,
+      ? `Confirm the removal. Sponge Screener deletes ${row.ID} from the table and moves its frame, crop and track to the trash folder in the data folder.`
+      : `Remove ${row.ID}. The button asks once more first, then Sponge Screener moves its images and track to the trash folder.`,
     attrs: { type: 'button', 'aria-label': armed ? `Confirm removing ${row.ID}` : `Remove ${row.ID}` },
     data: { id: row.ID, armed: String(armed) },
   }, [armed ? 'Remove?' : icon('close')]);
@@ -3326,7 +3367,7 @@ function toLabelNode(row) {
   const clock = row.Timestamp || formatClock(Number(row.TimestampSeconds));
   const jump = el('button', {
     class: 'sighting-jump',
-    title: `You open ${row.FileName} at ${clock}, and the wheel opens on ${row.ID} so you can give it a species.`,
+    title: `Open ${row.FileName} at ${clock} with the wheel on ${row.ID}, ready for a species.`,
     attrs: { type: 'button' },
     data: { id: row.ID },
   }, [
@@ -3403,10 +3444,31 @@ async function jumpToRow(row) {
 // ------------------------------------------------- settings, export, and help
 
 /**
+ * Send the annotator field to the server, once per value: a second call for the value
+ * already on its way (the field's change event and a video click right after it) waits for
+ * that save instead of sending another.
+ * @returns {Promise<void>} Settles after the server stored or refused the value.
+ */
+function saveAnnotator() {
+  const value = dom.annotator.value.trim();
+  if (runtime.annotatorSave && runtime.annotatorSaveValue === value) {
+    return runtime.annotatorSave;
+  }
+  const save = sendAnnotator().finally(() => {
+    if (runtime.annotatorSave === save) {
+      runtime.annotatorSave = null;
+    }
+  });
+  runtime.annotatorSave = save;
+  runtime.annotatorSaveValue = value;
+  return save;
+}
+
+/**
  * Send the annotator field to the server and show the server's verdict.
  * @returns {Promise<void>} Settles after the server stored or refused the value.
  */
-async function saveAnnotator() {
+async function sendAnnotator() {
   const value = dom.annotator.value.trim();
   if (value === state.annotator) {
     dom.annotator.value = state.annotator;
@@ -3420,8 +3482,105 @@ async function saveAnnotator() {
     toast(`Annotator set to ${state.annotator}`);
   } catch (error) {
     dom.annotator.setAttribute('aria-invalid', 'true');
-    toast(`The annotator was not saved, so sightings still carry ${state.annotator}. ${endSentence(error.message)}`, 'error');
+    const carried = state.annotator ? `, so sightings still carry ${state.annotator}` : '';
+    toast(`The annotator was not saved${carried}. ${endSentence(error.message)}`, 'error');
   }
+  if (state.annotator) {
+    dismissToast(NO_INITIALS_TEXT);
+  }
+}
+
+/**
+ * Mark the empty annotator field and keep one message on screen until initials are saved.
+ * The toast helper never replaces a sticky toast, so the old one is removed first.
+ */
+function askForInitials() {
+  dom.annotator.setAttribute('aria-invalid', 'true');
+  dismissToast(NO_INITIALS_TEXT);
+  toast(NO_INITIALS_TEXT, 'error', Infinity);
+}
+
+/**
+ * Remove a toast by its text, sticky or not.
+ * @param {string} text The toast's message.
+ */
+function dismissToast(text) {
+  for (const node of Array.from(dom.toasts.children)) {
+    if (node.dataset.text === text) {
+      node.remove();
+    }
+  }
+}
+
+/**
+ * Show why the page cannot work and disable every control that would call the server, so
+ * nothing invites a click that can only fail. The right panel stays empty, because nothing
+ * was loaded into it.
+ * @param {string} text The sentence for the player.
+ */
+function enterNoRun(text) {
+  setStatus('error', text);
+  document.body.dataset.run = 'none';
+  for (const name of NO_RUN_DISABLED) {
+    dom[name].disabled = true;
+  }
+}
+
+/**
+ * Start the annotator field on the signed-in initials: a valid ?initials= first, then what
+ * the run remembered, never a default. A URL value that differs from the remembered one is
+ * saved, so the sightings carry it. A field that stays empty is marked and explained.
+ * @returns {Promise<void>} Settles after the server stored or refused the URL initials.
+ */
+async function seedInitials() {
+  const fromUrl = initialsFromSearch(window.location.search);
+  const start = startingInitials(fromUrl, state.annotator);
+  if (start && start !== state.annotator) {
+    dom.annotator.value = start;
+    await saveAnnotator();
+  }
+  if (!state.annotator) {
+    askForInitials();
+  }
+}
+
+/**
+ * Join the VICARIUS run the page was opened on. A standalone server keeps no runs, and the
+ * page goes on as before. Under VICARIUS the page needs ?project_dir= and a run the server
+ * accepts; without one it says how to open a run and loads nothing else.
+ * @returns {Promise<boolean>} True when the page may load its data.
+ */
+async function joinRun() {
+  let health;
+  try {
+    health = await request('GET', '/api/health');
+  } catch (error) {
+    enterNoRun(`The server did not answer. ${endSentence(error.message)}`);
+    return false;
+  }
+  if (!health.runs) {
+    return true;
+  }
+  const projectDir = projectDirFromSearch(window.location.search);
+  if (!projectDir) {
+    enterNoRun(NO_RUN_TEXT);
+    return false;
+  }
+  try {
+    const answer = await request('POST', '/api/project/open', { project_dir: projectDir });
+    state.run = typeof answer.run === 'string' ? answer.run : '';
+  } catch (error) {
+    enterNoRun(`${endSentence(error.message)} ${NO_RUN_TEXT}`);
+    return false;
+  }
+  if (!state.run) {
+    enterNoRun(NO_RUN_TEXT);
+    return false;
+  }
+  dom.runName.textContent = state.run;
+  dom.runName.title = `Sponge Screener saves every sighting, image, track and export package in this VICARIUS run folder, inprocess/${state.run}.`;
+  dom.runName.hidden = false;
+  return true;
 }
 
 /**
@@ -3561,7 +3720,7 @@ function renderGuide() {
     const tile = el('div', {
       class: 'guide-image',
       attrs: { role: 'button', tabindex: '0' },
-      title: `You enlarge this photo of ${item.name}. Click the large photo or press Escape to shrink it.`,
+      title: `Enlarge the photo of ${item.name}. Click the large photo or press Escape to shrink it again.`,
     }, [img]);
     tile.addEventListener('click', () => enlargeGuideImage(src, item.name));
     tile.addEventListener('keydown', (event) => {
@@ -3676,6 +3835,10 @@ function onKeyDown(event) {
     return;
   }
   const key = keyFromEvent(event.key, event.code, event.shiftKey);
+  if (document.body.dataset.run === 'none' && !NO_RUN_KEYS.has(key)) {
+    // The buttons are disabled without a run, so their shortcuts are too.
+    return;
+  }
   if (key !== 'Backspace' && key !== 'Delete') {
     // Any other key disarms a deletion that waits for its second press.
     wheel.disarmDelete();
@@ -4120,6 +4283,10 @@ function wireEvents() {
   dom.sightings.addEventListener('click', onSightingsClick);
   dom.toLabel.addEventListener('click', onToLabelClick);
   dom.annotator.addEventListener('change', saveAnnotator);
+  dom.annotator.addEventListener('input', () => {
+    upperCaseAsTyped(dom.annotator);
+    dom.annotator.removeAttribute('aria-invalid');
+  });
   dom.exportButton.addEventListener('click', exportPackage);
   dom.helpToggle.addEventListener('click', () => toggleHelp());
   dom.helpClose.addEventListener('click', () => toggleHelp(false));
@@ -4151,9 +4318,11 @@ function restorePreferences() {
 }
 
 /**
- * Start the page: wire the events, then load the species, the tally, the To label list,
- * and the folder that was open last time.
- * @returns {Promise<void>} Settles after the first requests returned.
+ * Start the page: wire the events, join the VICARIUS run when the server keeps runs, then
+ * load the species (and start the annotator on the signed-in initials), the tally, the To
+ * label list, and the folder that was open last time.
+ * @returns {Promise<void>} Settles after the first requests returned, or at once when the
+ *   page has no run to work in.
  */
 async function start() {
   wireEvents();
@@ -4167,10 +4336,13 @@ async function start() {
   renderDone();
   renderTransport();
 
+  if (!(await joinRun())) {
+    return;
+  }
   const remembered = storageGet(STORAGE.prefix);
   const first = remembered && remembered.startsWith(ROOT_PREFIX) ? remembered : ROOT_PREFIX;
   await Promise.all([
-    loadSpecies(),
+    loadSpecies().then(() => (state.speciesError ? undefined : seedInitials())),
     refreshTally(),
     refreshToLabel(),
     loadCatalog(first).then(() => (

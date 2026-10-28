@@ -37,7 +37,8 @@ class Settings:
     """What the app remembers between runs.
 
     Attributes:
-        annotator: Initials written into every sighting, 1 to 12 characters.
+        annotator: Initials written into every sighting, 1 to 12 characters,
+            or "" while nobody has typed any (a sighting then refuses to save).
         pins: ``{pin key: species code or None}`` with the ten PIN_KEYS.
         export_root: The folder that receives export packages.
     """
@@ -70,6 +71,24 @@ def validate_annotator(value: Any) -> str:
     if not ANNOTATOR_PATTERN.fullmatch(value):
         raise ValueError(f"{ANNOTATOR_FIELD}: only letters, digits, period, underscore, and hyphen are allowed")
     return value
+
+
+def _validate_stored_annotator(value: Any) -> str:
+    """Check the annotator as settings.json keeps it, where "" means nobody has typed initials yet.
+
+    Args:
+        value: The candidate, of any type.
+
+    Returns:
+        The value unchanged.
+
+    Raises:
+        ValueError: Starting with ``annotator:`` when the value is not text,
+            or is non-empty and breaks the validate_annotator rules.
+    """
+    if value == "":
+        return value
+    return validate_annotator(value)
 
 
 def _validate_export_root(value: Any) -> str:
@@ -151,16 +170,19 @@ def _pins_from_file(stored: Any, species: Sequence[Species]) -> Dict[str, Option
     return pins
 
 
-def load_settings(path: Path, species: Sequence[Species]) -> Settings:
+def load_settings(path: Path, species: Sequence[Species], default_export_root: Optional[Path] = None) -> Settings:
     """Read settings.json, repairing what it can and never stopping the app.
 
     Args:
         path: The settings file. It may be missing.
         species: The list from load_species, used for default and stale pins.
+        default_export_root: The export folder when the file names none, or
+            None for DEFAULT_EXPORT_ROOT. A VICARIUS run passes its own
+            ``exports/`` folder.
 
     Returns:
-        The defaults (DEFAULT_ANNOTATOR, default_pins, DEFAULT_EXPORT_ROOT)
-        when the file is missing. The defaults when the file is not a JSON
+        The defaults (DEFAULT_ANNOTATOR, which is "", default_pins, and the
+        default export folder) when the file is missing. The defaults when the file is not a JSON
         object; that file is renamed to ``settings.json.corrupt-<UTC stamp>``.
         Otherwise the stored settings, where a missing or invalid field takes
         its default and a pin whose code left the species list becomes None.
@@ -169,9 +191,8 @@ def load_settings(path: Path, species: Sequence[Species]) -> Settings:
         ValueError: When species is not a list of Species.
         OSError: When the file exists and cannot be read or renamed.
     """
-    fallback = Settings(
-        annotator=DEFAULT_ANNOTATOR, pins=default_pins(species), export_root=str(DEFAULT_EXPORT_ROOT)
-    )
+    export_default = DEFAULT_EXPORT_ROOT if default_export_root is None else default_export_root
+    fallback = Settings(annotator=DEFAULT_ANNOTATOR, pins=default_pins(species), export_root=str(export_default))
     source = Path(path)
     if not source.exists():
         return fallback
@@ -183,7 +204,7 @@ def load_settings(path: Path, species: Sequence[Species]) -> Settings:
         _set_aside(source)
         return fallback
     try:
-        annotator = validate_annotator(stored.get(ANNOTATOR_FIELD))
+        annotator = _validate_stored_annotator(stored.get(ANNOTATOR_FIELD))
     except ValueError:
         annotator = fallback.annotator
     try:
@@ -240,14 +261,15 @@ def save_settings(path: Path, settings: Settings) -> None:
 
     Raises:
         ValueError: When settings is not a Settings, or a field fails its
-            check (the message starts with the field name). Nothing is written.
+            check (the message starts with the field name). An annotator of ""
+            is allowed and means nobody has typed initials yet. Nothing is written.
         OSError: When the folder or the file cannot be written. The old file
             stays as it was and the temp file is removed.
     """
     if not isinstance(settings, Settings):
         raise ValueError(f"settings: expected a Settings record, got {type(settings).__name__}")
     document = {
-        ANNOTATOR_FIELD: validate_annotator(settings.annotator),
+        ANNOTATOR_FIELD: _validate_stored_annotator(settings.annotator),
         PINS_FIELD: _check_pin_shapes(settings.pins),
         EXPORT_ROOT_FIELD: _validate_export_root(settings.export_root),
     }

@@ -57,6 +57,9 @@ JPEG = b"\xff\xd8\xff\xe0" + bytes(range(256)) * 4
 PNG = b"\x89PNG\r\n\x1a\n" + bytes(range(256))
 WAIT_SECONDS = 60.0
 POLL_SECONDS = 0.02
+# The initials every test app starts with, as if a person had typed them once:
+# the app itself has no default annotator.
+SEEDED_ANNOTATOR = "LO"
 
 
 def b64(data: bytes) -> str:
@@ -243,12 +246,13 @@ def make_app(tmp_path: Path, fake: FakeS3, static_root: Path):
         track_python: Optional[Path] = None,
         track_worker: Path = config.TRACK_WORKER,
     ) -> Running:
-        """Start one app on fresh data and cache folders, with optional settings.json contents."""
+        """Start one app on fresh data and cache folders, with settings.json holding SEEDED_ANNOTATOR plus any given settings."""
         data_dir = tmp_path / f"data{len(made)}"
         cache_dir = tmp_path / f"cache{len(made)}"
-        if settings is not None:
-            data_dir.mkdir(parents=True, exist_ok=True)
-            (data_dir / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+        seeded: Dict[str, Any] = {"annotator": SEEDED_ANNOTATOR}
+        seeded.update(settings or {})
+        data_dir.mkdir(parents=True, exist_ok=True)
+        (data_dir / "settings.json").write_text(json.dumps(seeded), encoding="utf-8")
         python = tmp_path / "no-venv" / "bin" / "python" if track_python is None else track_python
         app = ScreenerApp(
             data_dir, cache_dir, CONFIG_DIR, static_root, bucket_url or fake.url, 0, track_python=python, track_worker=track_worker
@@ -295,7 +299,7 @@ def test_health(running: Running, capsys):
     assert answer.status == 200
     assert answer.headers["Content-Type"].startswith("application/json")
     assert int(answer.headers["Content-Length"]) == len(answer.body)
-    assert answer.json() == {"ok": True, "version": config.VERSION}
+    assert answer.json() == {"ok": True, "version": config.VERSION, "locked": False, "runs": False}
     wait_for(lambda: "GET /api/health 200 " in capsys.readouterr().err, "the request log line")
 
 
@@ -443,7 +447,7 @@ def test_species_and_settings_round_trip(running: Running):
     answer = running.client.get("/api/species")
     assert answer.status == 200
     data = answer.json()
-    assert data["annotator"] == config.DEFAULT_ANNOTATOR
+    assert data["annotator"] == SEEDED_ANNOTATOR
     assert data["tally_target"] == config.TALLY_TARGET
     assert data["species"][0] == {"code": "ACAU", "name": "Aplysina cauliformis", "part": "1"}
     assert len(data["species"]) == 38
@@ -502,10 +506,11 @@ def test_settings_rejects_unknown_pin_code(running: Running):
 )
 def test_settings_rejects_bad_fields(running: Running, body: Any, prefix: str):
     """Bad annotators, incomplete pins, unknown fields, and empty objects are 400 and save nothing."""
+    before = (running.data_dir / "settings.json").read_bytes()
     answer = running.client.post("/api/settings", body)
     assert answer.status == 400
     assert answer.error.startswith(prefix), answer.error
-    assert not (running.data_dir / "settings.json").exists()
+    assert (running.data_dir / "settings.json").read_bytes() == before
 
 
 # ----- video relay -----
@@ -643,7 +648,7 @@ def test_save_observation_end_to_end(running: Running):
     assert row["FrameFileName"] == "ID001_ACAU_BOTTOMLEFT_FLC_T1.jpg"
     assert row["CropFileName"] == "ID001_ACAU_BOTTOMLEFT_FLC_T1.png"
     assert row["S3Key"] == KEY_T1
-    assert row["Annotator"] == config.DEFAULT_ANNOTATOR
+    assert row["Annotator"] == SEEDED_ANNOTATOR
     assert row["LabelStatus"] == "labeled"
     assert answer.json()["reopened"] is False
 
@@ -1430,7 +1435,7 @@ def test_open_and_done(running: Running):
     assert video["FileName"] == "TCRMP20241022_video_FLC_T1.MP4"
     assert video["Status"] == "in progress"
     assert video["TargetSpecies"] == "ACAU;AFUL;CDEL;MLAE;CPLI;ACRA;ACOM;XMUT"
-    assert video["Annotator"] == config.DEFAULT_ANNOTATOR
+    assert video["Annotator"] == SEEDED_ANNOTATOR
     assert video["FirstOpened"].endswith("Z")
     assert video["MarkedDone"] == ""
     assert video["Sightings"] == "0"
@@ -1518,7 +1523,7 @@ def test_mutations_require_header(running: Running):
         assert refused.error.startswith("X-Screener:"), refused.error
         wrong = running.client.request(method, path, body, headers={"X-Screener": "2"}, mutation_header=False)
         assert wrong.status == 403, (method, path)
-    assert running.client.get("/api/species").json()["annotator"] == config.DEFAULT_ANNOTATOR
+    assert running.client.get("/api/species").json()["annotator"] == SEEDED_ANNOTATOR
     assert running.client.get("/api/health", mutation_header=False).status == 200
     assert running.client.post("/api/videos/open", {"key": KEY_T1}).status == 200
 
@@ -1752,7 +1757,7 @@ def test_export_route_writes_package(make_app, tmp_path: Path):
     export_root = tmp_path / "exports"
     export_root.mkdir()
     running = make_app(settings={"export_root": str(export_root)})
-    assert running.client.get("/api/species").json()["annotator"] == config.DEFAULT_ANNOTATOR
+    assert running.client.get("/api/species").json()["annotator"] == SEEDED_ANNOTATOR
 
     empty = running.client.post("/api/export", {})
     assert empty.status == 400

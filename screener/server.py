@@ -1,11 +1,14 @@
 """The HTTP server of Sponge Screener: routes, request rules, and the app behind them.
 
 ScreenerApp wires the data layer, the catalog, the relay, the converter, and
-the tracker together and offers one method per route. The request handler turns HTTP into
-those method calls: it checks the Host header, the mutation header, and the
-body, maps every module error to a status code, streams video ranges, and
-logs one line per request to stderr. make_server binds the ThreadingHTTPServer
-that runs the handler.
+the tracker together and offers one method per route. The data layer lives in
+workspaces: one for the standalone data folder, or one per VICARIUS run
+folder, picked by the run each request names (the ``X-Screener-Run`` header,
+or ``?run=`` on an image). The request handler turns HTTP into those method
+calls: it checks the Host header, the VICARIUS module lock, the mutation
+header, and the body, maps every module error to a status code, streams video
+ranges, and logs one line per request to stderr. make_server binds the
+ThreadingHTTPServer that runs the handler.
 
 Every JSON error has the shape ``{"error": "<field>: <reason>"}``.
 """
@@ -26,22 +29,23 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
+from screener import config, lock_status, lockgate
 from screener.config import KEY_PREFIX, MAX_BODY_BYTES, PLAYABLE_EXTENSIONS, TALLY_TARGET, TRACK_PYTHON, TRACK_WORKER, VERSION
 from screener.convert import Converter, ConvertError, ConvertStatus
 from screener.export import ExportError, export_package
 from screener.keys import extension_of, quote_key
 from screener.names import load_site_names
 from screener.relay import ChunkRelay, ObjectNotFound, RangeNotSatisfiable, RelayError, parse_range_header
+from screener.runs import PROJECT_FILE, NoRun, RunFolders, UnknownRun
 from screener.s3catalog import CatalogError, S3Catalog
-from screener.settings import Settings, load_settings, save_settings, validate_annotator
-from screener.species import PIN_KEYS, Species, load_species, validate_pins
+from screener.species import Species, load_species
 from screener.store import ID_PATTERN, ObservationStore, StoreError, UnknownObservation
 from screener.tracking import Tracker
+from screener.workspace import EXPORTS_FOLDER, SETTINGS_FILE, Workspace
 
 # Files inside the config, data, and cache folders.
 SPECIES_FILE = "species.csv"
 SITES_FILE = "sites.csv"
-SETTINGS_FILE = "settings.json"
 CATALOG_FILE = "catalog.json"
 INDEX_FILE = "index.html"
 
@@ -51,14 +55,22 @@ MEDIA_ROUTE = "/media/"
 GUIDE_ROUTE = "/guide/"
 OBSERVATION_ROUTE = "/api/observations/"
 MEDIA_FOLDERS = ("frames", "crops")
-GUIDE_FOLDER = "guide"
 GUIDE_MANIFEST = "guide.json"
+PROJECT_OPEN_ROUTE = "/api/project/open"
+
+# How a request names its VICARIUS run: a header on every API call, or a query
+# parameter on an image address, which cannot carry a header.
+RUN_HEADER = "X-Screener-Run"
+RUN_QUERY = "run"
 
 # Request rules.
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost")
 MUTATION_HEADER = "X-Screener"
 MUTATION_VALUE = "1"
 MUTATING_METHODS = ("POST", "PATCH", "DELETE")
+# VICARIUS posts the project it opens from its own server with only a JSON
+# content type, so this route takes no mutation header. It writes nothing.
+MUTATION_HEADER_EXEMPT = (PROJECT_OPEN_ROUTE,)
 MEDIA_NAME = re.compile(r"[A-Za-z0-9_.-]+")
 FORBIDDEN_SEGMENTS = ("", ".", "..")
 FORBIDDEN_PATH_CHARACTERS = ("\\", "\x00")
@@ -101,6 +113,7 @@ HTTP_BAD_REQUEST = 400
 HTTP_FORBIDDEN = 403
 HTTP_NOT_FOUND = 404
 HTTP_METHOD_NOT_ALLOWED = 405
+HTTP_CONFLICT = 409
 HTTP_LENGTH_REQUIRED = 411
 HTTP_PAYLOAD_TOO_LARGE = 413
 HTTP_RANGE_NOT_SATISFIABLE = 416
@@ -112,7 +125,6 @@ BODYLESS_STATUSES = (204, 304)
 # The store names two arguments differently from the JSON the page posts.
 FIELD_NAMES = {"time_seconds": "time", "species_code": "species"}
 OBSERVATION_FIELDS = ("key", "time", "point", "species", "frame_jpeg", "crop_png")
-SETTINGS_FIELDS = ("annotator", "pins")
 QUIET_DISCONNECTS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, socket.timeout)
 
 
@@ -242,25 +254,27 @@ def _checked_obs_id(obs_id: str) -> str:
 
 
 class ScreenerApp:
-    """Everything behind the routes: the store, the settings, the catalog, the relay, the converter, the tracker.
+    """Everything behind the routes: the workspaces, the catalog, the relay, the converter.
 
-    One app serves every handler thread. The store, the catalog, the relay,
-    the converter, and the tracker guard their own state; the settings are
-    guarded here.
+    One app serves every handler thread. The catalog, the relay, and the
+    converter are shared; the data layer lives in workspaces (screener.workspace),
+    one for the standalone data folder or one per VICARIUS run folder, each
+    with its own store, settings, and tracker. Every data method takes the
+    workspace its request named; None means the standalone one.
 
     Attributes:
-        data_dir: The folder with observations.csv, videos_screened.csv,
-            frames/, crops/, tracks/, trash/, .lock, and settings.json.
         cache_dir: The folder with chunks/, converted/, and catalog.json.
         static_dir: The folder with the page and its files.
+        guide_dir: The folder with the species guide photos and guide.json.
+        runs: The VICARIUS runs folder, or None when the app keeps one data folder.
         port: The port the converter's and the tracker's source URLs use.
             make_server replaces it with the port it bound, so 0 works.
-        store, catalog, relay, converter, tracker: The modules behind the routes.
+        catalog, relay, converter: The shared modules behind the routes.
     """
 
     def __init__(
         self,
-        data_dir: Path,
+        data_dir: Optional[Path],
         cache_dir: Path,
         config_dir: Path,
         static_dir: Path,
@@ -268,11 +282,14 @@ class ScreenerApp:
         port: int,
         track_python: Path = TRACK_PYTHON,
         track_worker: Path = TRACK_WORKER,
+        runs_root: Optional[Path] = None,
+        guide_dir: Optional[Path] = None,
     ) -> None:
-        """Load the configuration and the settings, and start the relay, the converter, and the tracker.
+        """Load the configuration, open the standalone workspace, and start the relay and the converter.
 
         Args:
-            data_dir: The data folder. It is created when missing.
+            data_dir: The standalone data folder, created when missing; or
+                None in VICARIUS mode, where every request names a run.
             cache_dir: The cache folder. It is created when missing.
             config_dir: The folder with species.csv and sites.csv.
             static_dir: The existing folder with index.html and its files.
@@ -282,16 +299,26 @@ class ScreenerApp:
                 worker. When it is missing, tracking is off and the page draws
                 its marks where they were clicked.
             track_worker: screener/track_worker.py.
+            runs_root: The VICARIUS runs folder (``<module>/inprocess``) that
+                turns VICARIUS mode on, or None.
+            guide_dir: The species guide folder; None means ``<data_dir>/guide``,
+                or the clone's ``data/guide`` when there is no data folder.
 
         Raises:
             ValueError: Starting with the argument name when an argument has
-                the wrong type or value, or a config file breaks its rules.
+                the wrong type or value (including neither a data folder nor a
+                runs folder), or a config file breaks its rules.
             FileNotFoundError: When species.csv or sites.csv is missing.
             StoreError, RelayError, ConvertError: When a folder cannot be
                 created.
         """
-        for name, value in (("data_dir", data_dir), ("cache_dir", cache_dir), ("config_dir", config_dir), ("static_dir", static_dir)):
+        if data_dir is None and runs_root is None:
+            raise ValueError("data_dir: expected a data folder, or a runs folder for VICARIUS mode; got neither")
+        for name, value in (("cache_dir", cache_dir), ("config_dir", config_dir), ("static_dir", static_dir)):
             if not isinstance(value, (str, os.PathLike)):
+                raise ValueError(f"{name}: expected a folder path, got {type(value).__name__}")
+        for name, value in (("data_dir", data_dir), ("guide_dir", guide_dir)):
+            if value is not None and not isinstance(value, (str, os.PathLike)):
                 raise ValueError(f"{name}: expected a folder path, got {type(value).__name__}")
         if not Path(static_dir).is_dir():
             raise ValueError(f"static_dir: {static_dir} is not a folder")
@@ -302,16 +329,24 @@ class ScreenerApp:
         for name, value in (("track_python", track_python), ("track_worker", track_worker)):
             if not isinstance(value, os.PathLike):
                 raise ValueError(f"{name}: expected a path, got {type(value).__name__}")
-        self.data_dir = Path(data_dir)
+        self.runs: Optional[RunFolders] = RunFolders(runs_root) if runs_root is not None else None
         self.cache_dir = Path(cache_dir)
         self.static_dir = Path(static_dir).resolve()
+        if guide_dir is not None:
+            self.guide_dir = Path(guide_dir)
+        elif data_dir is not None:
+            self.guide_dir = Path(data_dir) / config.GUIDE_FOLDER
+        else:
+            self.guide_dir = config.guide_dir()
         self.port = port
+        self._track_python = Path(track_python)
+        self._track_worker = Path(track_worker)
         self._species: List[Species] = load_species(Path(config_dir) / SPECIES_FILE)
-        site_names = load_site_names(Path(config_dir) / SITES_FILE)
-        self.store = ObservationStore(self.data_dir, self._species, site_names)
-        self._settings_path = self.data_dir / SETTINGS_FILE
-        self._settings_lock = threading.Lock()
-        self._settings = load_settings(self._settings_path, self._species)
+        self._site_names = load_site_names(Path(config_dir) / SITES_FILE)
+        self._workspaces: Dict[str, Workspace] = {}
+        self._workspaces_lock = threading.Lock()
+        self._standalone: Optional[Workspace] = None
+        self._closed = False
         self.catalog = S3Catalog(bucket_url, cache_path=self.cache_dir / CATALOG_FILE)
         self.relay = ChunkRelay(bucket_url, self.cache_dir)
         try:
@@ -319,8 +354,13 @@ class ScreenerApp:
         except BaseException:
             self.relay.close()
             raise
-        self.tracker = Tracker(track_python, track_worker, source_for=self._track_source, save_track=self.store.tracks.save)
-        self._closed = False
+        if data_dir is not None:
+            try:
+                self._standalone = self._open_workspace(Path(data_dir), None, None, None)
+            except BaseException:
+                self.converter.close()
+                self.relay.close()
+                raise
 
     def _source_for(self, key: str) -> str:
         """Return the local relay URL ffmpeg reads a key from.
@@ -347,33 +387,138 @@ class ScreenerApp:
         converted = self.converter.converted_path(key)
         return str(converted) if converted is not None else self._source_for(key)
 
-    def close(self) -> None:
-        """Stop the tracker, the converter, and the relay. A second call does nothing.
+    def _open_workspace(
+        self, data_dir: Path, name: Optional[str], project_file: Optional[Path], export_root: Optional[Path]
+    ) -> Workspace:
+        """Open one data folder as a workspace with its own tracker.
 
-        The tracker stops first, because its worker reads through the relay.
+        Args:
+            data_dir: The data folder.
+            name: The run folder name, or None standalone.
+            project_file: The run's project.json, or None standalone.
+            export_root: The default export folder, or None for the app default.
+
+        Returns:
+            The workspace.
+        """
+
+        def make_tracker(store: ObservationStore) -> Tracker:
+            return Tracker(self._track_python, self._track_worker, source_for=self._track_source, save_track=store.tracks.save)
+
+        return Workspace(data_dir, self._species, self._site_names, make_tracker, export_root, name, project_file)
+
+    def close(self) -> None:
+        """Stop every workspace's tracker, then the converter and the relay. A second call does nothing.
+
+        The trackers stop first, because their workers read through the relay.
         """
         if self._closed:
             return
         self._closed = True
-        self.tracker.close()
+        with self._workspaces_lock:
+            workspaces = list(self._workspaces.values())
+            self._workspaces.clear()
+        if self._standalone is not None:
+            workspaces.append(self._standalone)
+        for workspace in workspaces:
+            workspace.close()
         self.converter.close()
         self.relay.close()
 
+    # ----- workspaces and runs -----
+
+    def workspace(self, run: Optional[str]) -> Workspace:
+        """Return the workspace a request names, opening a run's workspace the first time.
+
+        Args:
+            run: The run folder name from the request, or None (or "") for none.
+
+        Returns:
+            The standalone workspace when run is empty; otherwise the run's.
+
+        Raises:
+            NoRun: When run is empty and the app has no standalone data folder.
+            ValueError: Starting with ``run:`` when a run is named but the app
+                has no runs folder, or the name breaks the run folder rules.
+            UnknownRun: When no run folder with a project.json has that name.
+            StoreError: When the run folder cannot be opened.
+        """
+        if not run:
+            if self._standalone is None:
+                raise NoRun(
+                    "run: this window names no run; open it from a run on the Sponge Screener card of the VICARIUS desktop"
+                )
+            return self._standalone
+        if self.runs is None:
+            raise ValueError("run: this screener keeps one data folder (it was started without --vicarius), so it has no runs")
+        folder = self.runs.folder(run)
+        status = folder.stat()
+        identity = (status.st_dev, status.st_ino)
+        with self._workspaces_lock:
+            if self._closed:
+                raise StoreError("run: the screener is shutting down")
+            existing = self._workspaces.get(run)
+            if existing is not None and existing.identity == identity:
+                return existing
+            if existing is not None:
+                # The run folder was deleted and made again under the same name:
+                # nothing of the old run may carry over.
+                existing.close()
+            # A relative export folder, so settings.json stays right if the run folder moves.
+            opened = self._open_workspace(folder, run, folder / PROJECT_FILE, Path(EXPORTS_FOLDER))
+            self._workspaces[run] = opened
+            return opened
+
+    def open_project(self, fields: Any) -> Dict[str, Any]:
+        """Check the run VICARIUS opened the window with and answer its name.
+
+        Args:
+            fields: A JSON object with ``project_dir``, the run folder's absolute path.
+
+        Returns:
+            ``{"run": <run folder name>, "project_dir": <run folder>}``.
+
+        Raises:
+            ValueError: Starting with ``body``, ``project_dir``, or ``run`` when
+                the body is not an object, the app has no runs folder, or the
+                folder is not a run folder directly under the runs folder.
+            UnknownRun: When the folder or its project.json is missing.
+        """
+        if not isinstance(fields, Mapping):
+            raise ValueError(f"body: expected a JSON object, got {type(fields).__name__}")
+        if self.runs is None:
+            raise ValueError("project_dir: this screener keeps one data folder (it was started without --vicarius), so it opens no runs")
+        name = self.runs.name_for_project_dir(fields.get("project_dir"))
+        return {"run": name, "project_dir": str(self.runs.root / name)}
+
+    def _pick(self, workspace: Optional[Workspace]) -> Workspace:
+        """Return the given workspace, or the standalone one for None.
+
+        Raises:
+            NoRun: When workspace is None and there is no standalone data folder.
+        """
+        return workspace if workspace is not None else self.workspace(None)
+
+    @property
+    def data_dir(self) -> Path:
+        """The standalone data folder. Raises NoRun in VICARIUS mode without one."""
+        return self.workspace(None).data_dir
+
+    @property
+    def store(self) -> ObservationStore:
+        """The standalone workspace's store. Raises NoRun in VICARIUS mode without one."""
+        return self.workspace(None).store
+
+    @property
+    def tracker(self) -> Tracker:
+        """The standalone workspace's tracker. Raises NoRun in VICARIUS mode without one."""
+        return self.workspace(None).tracker
+
     # ----- settings -----
 
-    def settings(self) -> Settings:
-        """Return a copy of the current settings."""
-        with self._settings_lock:
-            return Settings(self._settings.annotator, dict(self._settings.pins), self._settings.export_root)
-
-    def pinned_codes(self) -> List[str]:
-        """Return the species codes on the number keys, in keyboard order."""
-        pins = self.settings().pins
-        return [pins[key] for key in PIN_KEYS if pins[key] is not None]
-
-    def species_payload(self) -> Dict[str, Any]:
+    def species_payload(self, workspace: Optional[Workspace] = None) -> Dict[str, Any]:
         """Lay out the species list, the pins, the annotator, and the tally target for the page."""
-        current = self.settings()
+        current = self._pick(workspace).settings()
         return {
             "species": [{"code": item.code, "name": item.name, "part": item.part} for item in self._species],
             "pins": current.pins,
@@ -381,11 +526,12 @@ class ScreenerApp:
             "tally_target": TALLY_TARGET,
         }
 
-    def update_settings(self, fields: Any) -> Dict[str, Any]:
+    def update_settings(self, fields: Any, workspace: Optional[Workspace] = None) -> Dict[str, Any]:
         """Change the annotator or the pins and save settings.json.
 
         Args:
             fields: A JSON object with ``annotator`` and/or ``pins``.
+            workspace: The workspace the request named; None for the standalone one.
 
         Returns:
             The species_payload after the change.
@@ -396,33 +542,20 @@ class ScreenerApp:
                 or a field that fails its check. Nothing is saved.
             OSError: When settings.json cannot be written.
         """
-        if not isinstance(fields, Mapping):
-            raise ValueError(f"settings: expected a JSON object, got {type(fields).__name__}")
-        unknown = [name for name in fields if name not in SETTINGS_FIELDS]
-        if unknown:
-            raise ValueError(f"settings: unknown field {unknown[0]!r}; expected {' or '.join(SETTINGS_FIELDS)}")
-        if not fields:
-            raise ValueError(f"settings: nothing to change; send {' or '.join(SETTINGS_FIELDS)}")
-        with self._settings_lock:
-            annotator = self._settings.annotator
-            pins = dict(self._settings.pins)
-            if "annotator" in fields:
-                annotator = validate_annotator(fields["annotator"])
-            if "pins" in fields:
-                pins = validate_pins(fields["pins"], self._species)
-            changed = Settings(annotator, pins, self._settings.export_root)
-            save_settings(self._settings_path, changed)
-            self._settings = changed
-        return self.species_payload()
+        chosen = self._pick(workspace)
+        chosen.update_settings(fields)
+        return self.species_payload(chosen)
 
     # ----- catalog -----
 
-    def catalog_page(self, prefix: str, refresh: bool) -> Dict[str, Any]:
+    def catalog_page(self, prefix: str, refresh: bool, workspace: Optional[Workspace] = None) -> Dict[str, Any]:
         """List one bucket folder with the screening status of every video.
 
         Args:
             prefix: The folder to list.
             refresh: True asks the bucket again even when a young listing is saved.
+            workspace: The workspace whose screening status the list shows;
+                None for the standalone one.
 
         Returns:
             The ``/api/catalog`` answer. Each video carries ``sightings`` (labeled
@@ -433,8 +566,9 @@ class ScreenerApp:
             CatalogError: When the bucket cannot be listed and no listing is saved.
             StoreError: When a CSV file cannot be parsed.
         """
+        chosen = self._pick(workspace)
         page = self.catalog.list(prefix, refresh=refresh)
-        status = self.store.video_status()
+        status = chosen.store.video_status()
         videos = []
         for entry in page.videos:
             known = status.get(entry.key, {"status": "new", "sightings": 0, "unlabeled": 0})
@@ -461,7 +595,7 @@ class ScreenerApp:
 
     # ----- observations -----
 
-    def observation_rows(self, key: Optional[str], status: Optional[str]) -> Dict[str, Any]:
+    def observation_rows(self, key: Optional[str], status: Optional[str], workspace: Optional[Workspace] = None) -> Dict[str, Any]:
         """Return the sightings of one video, the sightings with one label status, or both filters.
 
         Args:
@@ -479,9 +613,9 @@ class ScreenerApp:
         """
         if key is None and status is None:
             raise ValueError("key: missing")
-        return {"rows": self.store.rows(key, status)}
+        return {"rows": self._pick(workspace).store.rows(key, status)}
 
-    def save_observation(self, fields: Any) -> Dict[str, Any]:
+    def save_observation(self, fields: Any, workspace: Optional[Workspace] = None) -> Dict[str, Any]:
         """Save one sighting posted by the page, and queue its tracking job.
 
         Args:
@@ -496,34 +630,37 @@ class ScreenerApp:
             moved a done video back to in progress>}``.
 
         Raises:
-            ValueError: Starting with the name of the bad field. Nothing is written.
+            ValueError: Starting with the name of the bad field, or with
+                ``annotator:`` when nobody has typed initials. Nothing is written.
             StoreError: When the store cannot write the sighting.
         """
+        chosen = self._pick(workspace)
         if not isinstance(fields, Mapping):
             raise ValueError(f"body: expected a JSON object, got {type(fields).__name__}")
         for name in OBSERVATION_FIELDS:
             if name not in fields:
                 raise ValueError(f"{name}: missing")
+        annotator = chosen.annotator()
         frame = _decode_image(fields["frame_jpeg"], "frame_jpeg")
         crop = _decode_image(fields["crop_png"], "crop_png")
         try:
-            row = self.store.add(
+            row = chosen.store.add(
                 key=fields["key"],
                 time_seconds=fields["time"],
                 point=fields["point"],
                 box=fields.get("box"),
                 species_code=fields["species"],
                 note=fields.get("note", ""),
-                annotator=self.settings().annotator,
+                annotator=annotator,
                 frame_jpeg=frame,
                 crop_png=crop,
             )
         except ValueError as error:
             raise ValueError(_rename_field(str(error))) from error
-        self.tracker.add(row)
+        chosen.tracker.add(row)
         return {"row": dict(row), "reopened": row.reopened}
 
-    def relabel_observation(self, obs_id: str, fields: Any) -> Dict[str, Any]:
+    def relabel_observation(self, obs_id: str, fields: Any, workspace: Optional[Workspace] = None) -> Dict[str, Any]:
         """Give a sighting another species, or none, and rename its images.
 
         Args:
@@ -552,12 +689,12 @@ class ScreenerApp:
         if species is not None and not isinstance(species, str):
             raise ValueError(f"species: expected a species code or null, got {type(species).__name__}")
         try:
-            row = self.store.set_label(obs_id, species)
+            row = self._pick(workspace).store.set_label(obs_id, species)
         except ValueError as error:
             raise ValueError(_rename_field(str(error))) from error
         return {"row": dict(row), "reopened": row.reopened}
 
-    def delete_observation(self, obs_id: str) -> Dict[str, Any]:
+    def delete_observation(self, obs_id: str, workspace: Optional[Workspace] = None) -> Dict[str, Any]:
         """Remove one sighting, move its images and its track to the trash, and drop its tracking job.
 
         Args:
@@ -572,15 +709,16 @@ class ScreenerApp:
             StoreError: When the store cannot remove the sighting.
         """
         checked = _checked_obs_id(obs_id)
+        chosen = self._pick(workspace)
         try:
-            return {"deleted": self.store.delete(checked)}
+            return {"deleted": chosen.store.delete(checked)}
         finally:
             # A delete that fails partway may already have removed the row. A
             # sighting that stays has no track yet, so the page's next request
             # queues it again.
-            self.tracker.cancel(checked)
+            chosen.tracker.cancel(checked)
 
-    def tally_payload(self) -> Dict[str, Any]:
+    def tally_payload(self, workspace: Optional[Workspace] = None) -> Dict[str, Any]:
         """Count the labeled sightings per species across all videos, and the Later points.
 
         Returns:
@@ -589,10 +727,10 @@ class ScreenerApp:
         Raises:
             StoreError: When observations.csv cannot be parsed.
         """
-        tally, unlabeled = self.store.tally_and_unlabeled()
+        tally, unlabeled = self._pick(workspace).store.tally_and_unlabeled()
         return {"tally": tally, "total": sum(item["sightings"] for item in tally), "unlabeled": unlabeled}
 
-    def tracks_payload(self, key: Any) -> Dict[str, Any]:
+    def tracks_payload(self, key: Any, workspace: Optional[Workspace] = None) -> Dict[str, Any]:
         """Lay out the tracks of the sightings of one video, and queue the sightings without one.
 
         Args:
@@ -615,32 +753,36 @@ class ScreenerApp:
         """
         if key is None:
             raise ValueError("key: missing")
-        rows = self.store.rows(key)
-        tracks = self.store.tracks.for_ids([row["ID"] for row in rows])
+        chosen = self._pick(workspace)
+        rows = chosen.store.rows(key)
+        tracks = chosen.store.tracks.for_ids([row["ID"] for row in rows])
         missing = [row for row in rows if row["ID"] not in tracks]
-        return {"tracks": tracks, "pending": self.tracker.request(key, missing)}
+        return {"tracks": tracks, "pending": chosen.tracker.request(key, missing)}
 
     # ----- screened videos -----
 
-    def open_video(self, key: Any) -> Dict[str, Any]:
-        """Record that the annotator opened a video, then trim the chunk cache.
+    def open_video(self, key: Any, workspace: Optional[Workspace] = None) -> Dict[str, Any]:
+        """Record that the annotator opened a video, mark the run's screening step, then trim the chunk cache.
 
         Args:
             key: The video's key.
+            workspace: The workspace the request named; None for the standalone one.
 
         Returns:
             ``{"video": <the videos_screened.csv row>}``.
 
         Raises:
-            ValueError: Starting with the name of the bad argument (InvalidKey for the key).
+            ValueError: Starting with the name of the bad argument (InvalidKey
+                for the key), or with ``annotator:`` when nobody has typed initials.
             StoreError: When a CSV file cannot be parsed or written.
         """
-        current = self.settings()
-        row = self.store.mark_opened(key, current.annotator, self.pinned_codes())
+        chosen = self._pick(workspace)
+        row = chosen.store.mark_opened(key, chosen.annotator(), chosen.pinned_codes())
+        chosen.note_screening()
         self.relay.evict()
         return {"video": row}
 
-    def finish_video(self, key: Any, done: Any) -> Dict[str, Any]:
+    def finish_video(self, key: Any, done: Any, workspace: Optional[Workspace] = None) -> Dict[str, Any]:
         """Mark a video done, or return it to in progress.
 
         Args:
@@ -655,8 +797,8 @@ class ScreenerApp:
                 ``done:`` when done is True and the video holds Later points.
             StoreError: When a CSV file cannot be parsed or written.
         """
-        current = self.settings()
-        return {"video": self.store.mark_done(key, done, current.annotator, self.pinned_codes())}
+        chosen = self._pick(workspace)
+        return {"video": chosen.store.mark_done(key, done, chosen.annotator(), chosen.pinned_codes())}
 
     # ----- conversion and prefetch -----
 
@@ -699,8 +841,16 @@ class ScreenerApp:
 
     # ----- export -----
 
-    def export(self) -> Dict[str, Any]:
-        """Write the dated export package into the export folder from the settings.
+    def export(self, workspace: Optional[Workspace] = None) -> Dict[str, Any]:
+        """Write the dated export package into the export folder from the settings, and log it in the run.
+
+        A relative export folder is read from the data folder. A VICARIUS
+        run's export folder is ``exports``, so ``<run folder>/exports``, unless
+        its settings.json names another; that default folder is created when
+        missing. The run's project.json then shows the export step done.
+
+        Args:
+            workspace: The workspace the request named; None for the standalone one.
 
         Returns:
             ``{"path": <package folder>, "observations": <rows exported>,
@@ -710,12 +860,19 @@ class ScreenerApp:
             ExportError: When the export folder is missing, the store has no
                 labeled sighting, an image is missing, or a file cannot be written.
         """
-        result = export_package(self.store, Path(self.settings().export_root), date.today())
-        return {
-            "path": str(result.path),
-            "observations": _count_csv_rows(result.path / self.store.observations_path.name),
-            "unlabeled_left_out": result.unlabeled_left_out,
-        }
+        chosen = self._pick(workspace)
+        export_root = Path(chosen.settings().export_root)
+        if not export_root.is_absolute():
+            export_root = chosen.data_dir / export_root
+        if chosen.name is not None and export_root == chosen.data_dir / EXPORTS_FOLDER:
+            try:
+                export_root.mkdir(exist_ok=True)
+            except OSError as error:
+                raise ExportError(f"export_root: could not create {export_root}: {error}") from error
+        result = export_package(chosen.store, export_root, date.today())
+        rows = _count_csv_rows(result.path / chosen.store.observations_path.name)
+        chosen.note_export(result.path.name, rows)
+        return {"path": str(result.path), "observations": rows, "unlabeled_left_out": result.unlabeled_left_out}
 
 
 class _ScreenerServer(ThreadingHTTPServer):
@@ -745,8 +902,11 @@ class _ScreenerServer(ThreadingHTTPServer):
 class _Handler(BaseHTTPRequestHandler):
     """Answers one connection's requests from the ScreenerApp of its server.
 
-    Every request passes the Host check, then (for POST, PATCH, and DELETE)
-    the mutation header check, then the route table. Route methods raise
+    Every request passes the Host check, then the VICARIUS module lock (a
+    locked module answers the lock page or 423), then (for POST, PATCH, and
+    DELETE, except the project open VICARIUS posts) the mutation header check,
+    then the route table. Data routes pick their workspace from the run the
+    request names. Route methods raise
     HttpError for an answer with an error status, and module errors are
     mapped to statuses in one place (_dispatch). One log line per request
     goes to stderr when the request ends.
@@ -776,6 +936,7 @@ class _Handler(BaseHTTPRequestHandler):
         "/api/convert": {"GET": "_get_convert", "POST": "_post_convert"},
         "/api/prefetch": {"GET": "_get_prefetch", "POST": "_post_prefetch"},
         "/api/export": {"POST": "_post_export"},
+        PROJECT_OPEN_ROUTE: {"POST": "_post_project_open"},
         "/video": {"GET": "_get_video"},
     }
     PREFIX_ROUTES: Tuple[Tuple[str, Dict[str, str]], ...] = (
@@ -867,13 +1028,21 @@ class _Handler(BaseHTTPRequestHandler):
         parts = urllib.parse.urlsplit(self.path)
         path = urllib.parse.unquote(parts.path)
         query = urllib.parse.parse_qs(parts.query, keep_blank_values=True)
-        if self.command in MUTATING_METHODS:
+        refused = lockgate.refusal(self.command, path, self.headers.get("Accept"))
+        if refused is not None:
+            self._send_refusal(refused)
+            return
+        if self.command in MUTATING_METHODS and path not in MUTATION_HEADER_EXEMPT:
             self._check_mutation_header()
         route, rest = self._find_route(path)
         try:
             route(rest, query)
         except HttpError:
             raise
+        except NoRun as error:
+            raise HttpError(HTTP_CONFLICT, str(error)) from error
+        except UnknownRun as error:
+            raise HttpError(HTTP_NOT_FOUND, str(error)) from error
         except UnknownObservation as error:
             raise HttpError(HTTP_NOT_FOUND, str(error)) from error
         except ObjectNotFound as error:
@@ -905,6 +1074,53 @@ class _Handler(BaseHTTPRequestHandler):
         allowed = tuple(f"{name}:{port}" for name in LOOPBACK_HOSTS)
         if host is None or host.strip().lower() not in allowed:
             raise HttpError(HTTP_FORBIDDEN, f"Host: {host!r} is not this server; expected {' or '.join(allowed)}")
+
+    def _send_refusal(self, refused: lockgate.Refusal) -> None:
+        """Send the lock page or the 423 answer in place of the route.
+
+        A request body is left unread, so the connection closes after the answer.
+
+        Args:
+            refused: The answer from lockgate.refusal.
+        """
+        if "Content-Length" in self.headers or "Transfer-Encoding" in self.headers:
+            self.close_connection = True
+        self.send_response(refused.status)
+        self.send_header("Content-Type", refused.content_type)
+        self.send_header("Content-Length", str(len(refused.body)))
+        self.send_header("Cache-Control", "no-store")
+        if self.close_connection:
+            self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(refused.body)
+        self._note = "module locked"
+
+    def _workspace(self, query: Mapping[str, List[str]], from_query: bool = False) -> Workspace:
+        """Return the workspace this request names in the run header, or for an image in the run query parameter.
+
+        Only an image address may name its run in the query string, because an
+        image cannot carry a header. Every API call names it in the header,
+        which another website cannot add without the browser asking first.
+
+        Args:
+            query: The parsed query string.
+            from_query: True for the image route, which reads ``?run=``
+                when the header is absent.
+
+        Returns:
+            The run's workspace, or the standalone one when no run is named.
+
+        Raises:
+            HttpError: 400 when the run query parameter repeats.
+            NoRun, UnknownRun, ValueError: From ScreenerApp.workspace.
+        """
+        run = self.headers.get(RUN_HEADER)
+        if run is not None:
+            # The page percent-encodes the header, since a header carries only Latin-1.
+            run = urllib.parse.unquote(run)
+        elif from_query:
+            run = self._query_value(query, RUN_QUERY)
+        return self.server.app.workspace(run.strip() if run else None)
 
     def _check_mutation_header(self) -> None:
         """Refuse a POST, PATCH, or DELETE without the page's header.
@@ -1238,7 +1454,7 @@ class _Handler(BaseHTTPRequestHandler):
             raise HttpError(HTTP_NOT_FOUND, f"route: no route for GET {MEDIA_ROUTE}{rest}")
         if not MEDIA_NAME.fullmatch(name) or name in FORBIDDEN_SEGMENTS:
             raise HttpError(HTTP_BAD_REQUEST, f"name: {name!r} must match ^[A-Za-z0-9_.-]+$ and name a file")
-        store = self.server.app.store
+        store = self._workspace(query, from_query=True).store
         root = (store.frames_dir if folder == MEDIA_FOLDERS[0] else store.crops_dir).resolve()
         target = self._safe_path(root, name)
         self._send_file(target, CONTENT_TYPES.get(extension_of(name), BINARY_TYPE), None, False, NO_CACHE)
@@ -1246,10 +1462,12 @@ class _Handler(BaseHTTPRequestHandler):
     def _get_guide(self, rest: str, query: Dict[str, List[str]]) -> None:
         """Serve the species reference: guide.json, or a photo as <CODE>/<file>.
 
-        The files live in ``<data>/guide/``, written by tools/fetch_guide_images.py.
-        A missing guide answers 404 with a message that names the script.
+        The files live in the app's guide folder (``<data>/guide/`` standalone,
+        the clone's ``data/guide/`` in VICARIUS mode), written by
+        tools/fetch_guide_images.py. A missing guide answers 404 with a message
+        that names the script.
         """
-        root = (self.server.app.data_dir / GUIDE_FOLDER).resolve()
+        root = self.server.app.guide_dir.resolve()
         if not root.is_dir():
             raise HttpError(HTTP_NOT_FOUND, "guide: no reference photos yet; run tools/fetch_guide_images.py")
         if rest == GUIDE_MANIFEST:
@@ -1263,70 +1481,81 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_file(target, CONTENT_TYPES.get(extension_of(name), BINARY_TYPE), None, False, NO_CACHE)
 
     def _get_health(self, rest: str, query: Dict[str, List[str]]) -> None:
-        """Answer the health check."""
-        self._send_json(HTTP_OK, {"ok": True, "version": VERSION})
+        """Answer the health check: the version, whether VICARIUS has the module locked, and whether it keeps runs."""
+        app = self.server.app
+        self._send_json(HTTP_OK, {"ok": True, "version": VERSION, "locked": lock_status.is_locked(), "runs": app.runs is not None})
+
+    def _post_project_open(self, rest: str, query: Dict[str, List[str]]) -> None:
+        """Check the run folder VICARIUS opened the window with and answer the run's name."""
+        self._send_json(HTTP_OK, self.server.app.open_project(self._object_body()))
 
     def _get_catalog(self, rest: str, query: Dict[str, List[str]]) -> None:
         """List a bucket folder. A missing prefix lists the top folder."""
         prefix = self._query_value(query, "prefix")
         refresh = self._query_flag(query, "refresh")
-        self._send_json(HTTP_OK, self.server.app.catalog_page(KEY_PREFIX if prefix is None else prefix, refresh))
+        workspace = self._workspace(query)
+        self._send_json(HTTP_OK, self.server.app.catalog_page(KEY_PREFIX if prefix is None else prefix, refresh, workspace))
 
     def _get_species(self, rest: str, query: Dict[str, List[str]]) -> None:
         """Answer the species list, the pins, the annotator, and the tally target."""
-        self._send_json(HTTP_OK, self.server.app.species_payload())
+        self._send_json(HTTP_OK, self.server.app.species_payload(self._workspace(query)))
 
     def _post_settings(self, rest: str, query: Dict[str, List[str]]) -> None:
         """Change the annotator or the pins."""
-        app = self.server.app
+        workspace = self._workspace(query)
         body = self._object_body()
         try:
-            payload = app.update_settings(body)
+            payload = self.server.app.update_settings(body, workspace)
         except OSError as error:
-            raise HttpError(HTTP_INTERNAL_ERROR, f"settings: could not save {app.data_dir / SETTINGS_FILE}: {error}") from error
+            raise HttpError(HTTP_INTERNAL_ERROR, f"settings: could not save {workspace.data_dir / SETTINGS_FILE}: {error}") from error
         self._send_json(HTTP_OK, payload)
 
     def _get_observations(self, rest: str, query: Dict[str, List[str]]) -> None:
         """List the sightings of one video, the Later points of all videos, or both filters together."""
         key = self._query_value(query, "key")
         status = self._query_value(query, "status")
-        self._send_json(HTTP_OK, self.server.app.observation_rows(key, status))
+        self._send_json(HTTP_OK, self.server.app.observation_rows(key, status, self._workspace(query)))
 
     def _post_observation(self, rest: str, query: Dict[str, List[str]]) -> None:
         """Save one sighting."""
-        self._send_json(HTTP_CREATED, self.server.app.save_observation(self._object_body()))
+        workspace = self._workspace(query)
+        self._send_json(HTTP_CREATED, self.server.app.save_observation(self._object_body(), workspace))
 
     def _patch_observation(self, rest: str, query: Dict[str, List[str]]) -> None:
         """Relabel or unlabel one sighting by the ID in the path."""
         if not rest or "/" in rest:
             raise HttpError(HTTP_NOT_FOUND, f"route: no route for PATCH {OBSERVATION_ROUTE}{rest}")
-        self._send_json(HTTP_OK, self.server.app.relabel_observation(rest, self._object_body()))
+        workspace = self._workspace(query)
+        self._send_json(HTTP_OK, self.server.app.relabel_observation(rest, self._object_body(), workspace))
 
     def _delete_observation(self, rest: str, query: Dict[str, List[str]]) -> None:
         """Remove one sighting by the ID in the path."""
         if not rest or "/" in rest:
             raise HttpError(HTTP_NOT_FOUND, f"route: no route for DELETE {OBSERVATION_ROUTE}{rest}")
-        self._send_json(HTTP_OK, self.server.app.delete_observation(rest))
+        self._send_json(HTTP_OK, self.server.app.delete_observation(rest, self._workspace(query)))
 
     def _get_tally(self, rest: str, query: Dict[str, List[str]]) -> None:
         """Answer the species tally."""
-        self._send_json(HTTP_OK, self.server.app.tally_payload())
+        self._send_json(HTTP_OK, self.server.app.tally_payload(self._workspace(query)))
 
     def _get_tracks(self, rest: str, query: Dict[str, List[str]]) -> None:
         """Answer the tracks of the sightings of one video."""
-        self._send_json(HTTP_OK, self.server.app.tracks_payload(self._required_query(query, "key")))
+        key = self._required_query(query, "key")
+        self._send_json(HTTP_OK, self.server.app.tracks_payload(key, self._workspace(query)))
 
     def _post_open(self, rest: str, query: Dict[str, List[str]]) -> None:
         """Record that a video was opened."""
+        workspace = self._workspace(query)
         body = self._object_body()
-        self._send_json(HTTP_OK, self.server.app.open_video(self._body_field(body, "key")))
+        self._send_json(HTTP_OK, self.server.app.open_video(self._body_field(body, "key"), workspace))
 
     def _post_done(self, rest: str, query: Dict[str, List[str]]) -> None:
         """Mark a video done or in progress."""
+        workspace = self._workspace(query)
         body = self._object_body()
         key = self._body_field(body, "key")
         done = self._body_field(body, "done")
-        self._send_json(HTTP_OK, self.server.app.finish_video(key, done))
+        self._send_json(HTTP_OK, self.server.app.finish_video(key, done, workspace))
 
     def _get_convert(self, rest: str, query: Dict[str, List[str]]) -> None:
         """Report a conversion's status."""
@@ -1348,8 +1577,9 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _post_export(self, rest: str, query: Dict[str, List[str]]) -> None:
         """Write the export package."""
+        workspace = self._workspace(query)
         self._object_body()
-        self._send_json(HTTP_OK, self.server.app.export())
+        self._send_json(HTTP_OK, self.server.app.export(workspace))
 
     def _get_video(self, rest: str, query: Dict[str, List[str]]) -> None:
         """Stream a video from the relay, or a converted copy from disk."""

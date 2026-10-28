@@ -1,0 +1,19 @@
+# ==============================================================================
+# Sponge Screener dependencies
+# ==============================================================================
+# The app itself uses only the Python standard library (3.9 or newer) plus the
+# system ffmpeg and ffprobe. This file lists what the test suite needs (PyYAML
+# reads module.yaml in tests/test_module_yaml.py); build
+# the test environment with:
+#   /usr/bin/python3 -m venv env && env/bin/pip install -r requirements.txt
+# On a system Python without ensurepip (Ubuntu without python3-venv), make the
+# environment with --without-pip and install with any other pip 22.3 or newer:
+#   <other python> -m pip --python env/bin/python install -r requirements.txt
+#
+# Sponge tracking (optional) runs in its own environment, .venv-track/:
+#   /usr/bin/python3 -m venv .venv-track
+#   .venv-track/bin/pip install -r requirements-track.txt
+# ==============================================================================
+
+pytest==9.2.0
+pyyaml==6.0.3

@@ -7,7 +7,7 @@ an unexplained literal.
 import os
 from pathlib import Path
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 APP_ROOT = Path(__file__).resolve().parent.parent
 
@@ -29,7 +29,10 @@ CACHE_KEEP_SECONDS = 600
 CATALOG_MAX_AGE_SECONDS = 86400
 
 HOST = "127.0.0.1"
+# Standalone port (python3 screener.py on a laptop), and the port the VICARIUS
+# desktop opens the module on (python3 screener.py --vicarius).
 PORT = 8770
+VICARIUS_PORT = 5098
 MAX_BODY_BYTES = 120 * 1024 * 1024
 
 # Extensions Chrome plays directly, and every extension the catalog lists.
@@ -43,7 +46,11 @@ MAX_NOTE_LENGTH = 500
 MAX_TIME_SECONDS = 86400
 TALLY_TARGET = 3
 
-DEFAULT_ANNOTATOR = "LO"
+# No default initials: the annotator field starts on the initials VICARIUS
+# signs a person in with, then on what the data folder remembers, and is blank
+# otherwise (VICARIUS rule: never a default such as LO). A sighting refuses to
+# save until the field holds initials.
+DEFAULT_ANNOTATOR = ""
 
 # Sponge tracking. OpenCV lives only in the Python of .venv-track, so the
 # server runs track_worker.py there, one sighting at a time, in the
@@ -81,6 +88,19 @@ def cache_dir() -> Path:
         otherwise ``<app root>/cache``.
     """
     return Path(os.environ.get("SCREENER_CACHE_DIR", str(APP_ROOT / "cache")))
+
+
+GUIDE_FOLDER = "guide"
+
+
+def guide_dir() -> Path:
+    """Return the species guide folder used when the app has no data folder of its own (VICARIUS mode).
+
+    Returns:
+        ``<app root>/data/guide``, where tools/fetch_guide_images.py writes the
+        reference photos and guide.json.
+    """
+    return APP_ROOT / "data" / GUIDE_FOLDER
 
 
 def config_dir() -> Path:

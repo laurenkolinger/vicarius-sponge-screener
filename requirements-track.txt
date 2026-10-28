@@ -1,0 +1,10 @@
+# ==============================================================================
+# Sponge tracking environment (.venv-track/), optional
+# ==============================================================================
+# screener/track_worker.py runs under .venv-track/bin/python and needs OpenCV's
+# CSRT tracker (the contrib build) and numpy. Without this environment the app
+# works and the marks stay where they were clicked.
+# ==============================================================================
+
+opencv-contrib-python-headless
+numpy

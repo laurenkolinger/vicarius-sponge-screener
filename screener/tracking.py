@@ -285,7 +285,7 @@ class Tracker:
     def _unavailable_reason(self) -> str:
         """Say why tracking cannot run here, or return "" when it can."""
         if not self._python.is_file() or not os.access(str(self._python), os.X_OK):
-            return f"tracking is off: {self._python} is missing or cannot run (the README section Tracking sets it up)"
+            return f"tracking is off: {self._python} is missing or cannot run (the README section Resume from cold sets it up)"
         if not self._worker.is_file():
             return f"tracking is off: the worker {self._worker} is missing"
         return ""

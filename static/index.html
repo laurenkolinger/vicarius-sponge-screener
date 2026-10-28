@@ -34,20 +34,23 @@
     <div class="brand">
       <span class="brand-mark" aria-hidden="true"></span>
       <h1 class="brand-name">Sponge Screener</h1>
+      <span id="run-name" class="run-chip" hidden
+            title="Sponge Screener saves every sighting, image, track and export package in this VICARIUS run folder under inprocess/."></span>
     </div>
-    <p id="current-video" class="current-video" title="The video that is open now.">No video open</p>
+    <p id="current-video" class="current-video">No video open</p>
     <div class="topbar-tools">
-      <label class="field-inline" for="annotator">
+      <label class="field-inline" for="annotator-initials">
         <span class="field-label">Annotator</span>
-        <input id="annotator" class="input input-short" type="text" maxlength="12" autocomplete="off" spellcheck="false"
-               title="You type your initials here. The server writes them into the Annotator column of every sighting you save.">
+        <input id="annotator-initials" class="input input-short" type="text" maxlength="12" autocomplete="off" spellcheck="false"
+               autocapitalize="characters"
+               title="Type your initials. Under VICARIUS the field starts on your sign-in, and Sponge Screener writes them into the Annotator column of every sighting.">
       </label>
       <button id="export" type="button" class="button"
-              title="You export the ground-truth package. The server copies both tables and every frame and crop into a dated folder inside the OnDeck Drive folder.">Export</button>
+              title="Export the ground-truth package. Sponge Screener copies tables, tracks, labeled frames and crops to spongeGroundTruth_&lt;YYYYMMDD&gt; in the exports folder (the run's, under VICARIUS) or the export_root set in settings.json.">Export</button>
       <button id="guide-toggle" type="button" class="button" aria-expanded="false" aria-controls="guide"
-              title="You open the species guide: reference photos and the ID guide description for a species. The I key opens and closes it too.">Guide</button>
+              title="Open the species guide, with reference photos and the ID guide description of each species. The I key opens and closes it too.">Guide</button>
       <button id="help-toggle" type="button" class="button button-icon" aria-label="Keyboard shortcuts" aria-expanded="false" aria-controls="help"
-              title="You open the list of keyboard shortcuts. The ? key opens and closes it too.">?</button>
+              title="Open the card of keyboard shortcuts for screening and for the species wheel. The ? key opens and closes it too.">?</button>
     </div>
   </header>
 
@@ -57,27 +60,28 @@
       <div class="panel-head">
         <h2 class="panel-title">Videos</h2>
         <span id="stale-badge" class="badge badge-warn" hidden
-              title="The server could not reach the bucket, so this list comes from the copy saved on this Mac. You can press Refresh to try again.">offline copy</span>
+              title="Sponge Screener could not reach the bucket, so the list comes from the listing it saved in its cache folder. Press Refresh to ask the bucket again.">offline copy</span>
       </div>
       <nav id="breadcrumb" class="breadcrumb" aria-label="Folder path"></nav>
       <div class="search-row">
         <input id="search" class="input" type="search" placeholder="Search this folder" autocomplete="off" spellcheck="false" aria-label="Search this folder"
-               title="You type part of a folder or file name to narrow this list. Enter opens the first match.">
+               title="Type part of a folder or file name to narrow the list to matches in the open folder. Enter opens the first match.">
         <button id="refresh" type="button" class="button button-icon" aria-label="Refresh this folder"
-                title="You ask the server to list this folder from the bucket again. Use it after new videos were uploaded.">
+                title="Ask the bucket for a fresh listing of the open folder after new videos were uploaded. Sponge Screener otherwise reuses its saved listing for up to a day.">
           <svg class="icon" aria-hidden="true"><use href="#i-refresh"></use></svg>
         </button>
       </div>
       <div id="catalog-error" class="notice notice-error" role="alert" hidden>
         <p id="catalog-error-text" class="notice-text"></p>
         <button id="catalog-retry" type="button" class="button"
-                title="You ask the server for this folder again.">Retry</button>
+                title="List the open folder from the bucket again. Check the lab's internet connection first when the bucket stays unreachable.">Retry</button>
       </div>
       <div class="panel-scroll" id="browser-scroll">
         <ul id="folders" class="rows" aria-label="Folders"></ul>
         <ul id="videos" class="rows" aria-label="Videos"></ul>
         <p id="browser-empty" class="empty" hidden></p>
       </div>
+      <p class="credit">Built by Lauren Olinger</p>
     </aside>
 
     <section class="center" aria-label="Player">
@@ -89,11 +93,11 @@
           <!-- No title here on purpose: a hover tooltip would cover the sponges under the pointer.
                The same words stay on screen in the line under the species strip. -->
           <canvas id="overlay" class="stage-overlay" role="img"
-                  aria-label="Video picture. You click a sponge to pause the video and mark a point, or you drag to draw a box around it."></canvas>
+                  aria-label="Click a sponge in the video to pause it and mark a point, or drag to draw a box around it."></canvas>
           <div id="stage-status" class="stage-status" role="status" aria-live="polite">
             <p id="stage-status-text" class="stage-status-text">Pick a video from the list on the left. Then click a sponge and pick its species in the wheel.</p>
             <button id="stage-action" type="button" class="button" hidden
-                    title="You start this video again from the server.">Retry</button>
+                    title="Load the open video from the server again.">Retry</button>
           </div>
         </div>
 
@@ -101,45 +105,45 @@
           <div class="scrub-wrap">
             <div id="scrub-marks" class="scrub-marks" aria-hidden="true"></div>
             <input id="scrub" class="scrub" type="range" min="0" max="0" step="0.01" value="0" aria-label="Position in the video" disabled
-                   title="You drag to move through the video. The pink ticks show the sightings saved in this video, and the amber ticks show the points saved for later.">
+                   title="Drag to move through the video. Pink ticks mark the sightings saved in the video, and amber ticks the points saved for later.">
           </div>
           <div class="transport-row">
             <button id="play" type="button" class="button button-icon" aria-label="Play" disabled
-                    title="You play or pause the video. The Space key does the same.">
+                    title="Play or pause the video, which starts at 1.5x. The Space key does the same.">
               <svg class="icon" aria-hidden="true"><use id="play-icon" href="#i-play"></use></svg>
             </button>
             <span id="time" class="time" title="The position in the video and its length, as minutes and seconds.">--:-- / --:--</span>
             <span class="transport-gap"></span>
             <div class="speed" role="group" aria-label="Playback speed">
               <button id="slower" type="button" class="button button-icon" aria-label="Slower"
-                      title="You slow playback down one step. The [ key does the same.">
+                      title="Slow playback by one step, down to 0.5x. The [ key does the same.">
                 <svg class="icon" aria-hidden="true"><use href="#i-minus"></use></svg>
               </button>
               <span id="speed" class="speed-value" title="The playback speed. It runs from 0.5x to 3x and starts at 1.5x.">1.5x</span>
               <button id="faster" type="button" class="button button-icon" aria-label="Faster"
-                      title="You speed playback up one step. The ] key does the same.">
+                      title="Speed playback up by one step, up to 3x. The ] key does the same.">
                 <svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg>
               </button>
             </div>
             <button id="grid" type="button" class="button button-icon" aria-label="Quadrant grid and center line" aria-pressed="true"
-                    title="You show or hide the quadrant lines and the center line. The G key does the same.">
+                    title="Show or hide the quadrant lines and the center line on the picture. The G key does the same, and the browser remembers the choice.">
               <svg class="icon" aria-hidden="true"><use href="#i-grid"></use></svg>
             </button>
             <button id="done" type="button" class="button button-toggle" aria-pressed="false" disabled
-                    title="You mark this video as fully screened. OnDeck then treats a target species with no rows here as absent. The D key does the same.">
+                    title="Mark the open video fully screened, or return it to in progress; the D key does the same. A done video counts every pinned species without a sighting as absent, and Sponge Screener refuses it while the video holds Later points.">
               <svg class="icon" aria-hidden="true"><use href="#i-check"></use></svg>
               <span id="done-label">Done</span>
             </button>
             <button id="next" type="button" class="button button-icon" aria-label="Next video"
-                    title="You open the next video in the list. The N key does the same.">
+                    title="Open the next video in the folder list. The N key does the same.">
               <svg class="icon" aria-hidden="true"><use href="#i-next"></use></svg>
             </button>
             <button id="deck-toggle" type="button" class="button button-icon" aria-label="Species keys panel" aria-pressed="false"
-                    title="You show or hide the panel under the video with the pinned species keys, the pin controls, and the note box. The P key does the same.">
+                    title="Show or hide the panel under the video with the pinned species keys, the pin controls and the note box. The P key does the same, and the browser remembers the choice.">
               <svg class="icon" aria-hidden="true"><use href="#i-panel"></use></svg>
             </button>
             <button id="fullscreen" type="button" class="button button-icon" aria-label="Full screen"
-                    title="You fill the screen with the video and its controls. The F key does the same, and F or a long press on Escape leaves.">
+                    title="Fill the screen with the video and its controls. The F key does the same, and F or a long press on Escape leaves full screen.">
               <svg class="icon" aria-hidden="true"><use id="fullscreen-icon" href="#i-expand"></use></svg>
             </button>
           </div>
@@ -158,15 +162,14 @@
             <label class="guide-pick">
               <span class="visually-hidden">Species</span>
               <select id="guide-species" class="input"
-                      title="You pick the species to look at. A species you pick in the wheel or the mark bar moves this too."></select>
+                      title="Pick the species the guide shows. A species picked in the wheel or the mark bar moves the guide to it too."></select>
             </label>
             <span id="guide-count" class="guide-count"></span>
             <button id="guide-dock" type="button" class="button button-icon" aria-label="Dock the guide beside the video" aria-pressed="true"
-                    title="You dock the guide in a column beside the video, so it never covers the picture, or let it float over the page. The app remembers your choice.">
+                    title="Dock the guide in a column beside the video, or let it float over the page. The browser remembers the choice.">
               <svg class="icon" aria-hidden="true"><use href="#i-dock"></use></svg>
             </button>
-            <button id="guide-close" type="button" class="button button-icon" aria-label="Close the species guide"
-                    title="You close the guide. The Escape key and the I key do the same.">
+            <button id="guide-close" type="button" class="button button-icon" aria-label="Close the species guide">
               <svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg>
             </button>
           </div>
@@ -177,8 +180,7 @@
         <div id="help" class="help" role="dialog" aria-label="Keyboard shortcuts" hidden>
           <div class="help-head">
             <h2 class="panel-title">Keyboard shortcuts</h2>
-            <button id="help-close" type="button" class="button button-icon" aria-label="Close the shortcuts card"
-                    title="You close this card. The Escape key and the ? key do the same.">
+            <button id="help-close" type="button" class="button button-icon" aria-label="Close the shortcuts card">
               <svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg>
             </button>
           </div>
@@ -230,7 +232,7 @@
         <div id="species-error" class="notice notice-error" role="alert" hidden>
           <p id="species-error-text" class="notice-text"></p>
           <button id="species-retry" type="button" class="button"
-                  title="You ask the server for the species list again.">Retry</button>
+                  title="Load the species list from the server again. Sponge Screener reads it from config/species.csv in the clone.">Retry</button>
         </div>
         <div id="pins" class="pins" role="group" aria-label="Pinned species, keys 1 to 9 and 0"></div>
 
@@ -244,14 +246,14 @@
             <div class="combo">
               <input id="filter" class="input" type="text" placeholder="Filter species" autocomplete="off" spellcheck="false"
                      role="combobox" aria-expanded="false" aria-controls="matches" aria-autocomplete="list" aria-label="Filter species"
-                     title="You type part of a species name or code. Up and Down move through the matches, and Enter chooses the highlighted one; with a mark on screen, that saves the sighting at once.">
+                     title="Type part of a species name or code to filter the matches; Up and Down move through them. Enter picks the highlighted species, and with a mark open Sponge Screener saves the sighting at once.">
               <ul id="matches" class="matches" role="listbox" aria-label="Matching species" hidden></ul>
             </div>
             <input id="note" class="input note" type="text" maxlength="500" placeholder="Note (optional)" autocomplete="off" aria-label="Note" disabled
-                   title="You add an optional note. The server appends it after the quadrant phrase in the Notes column.">
+                   title="Add an optional note of up to 500 characters to the sighting being marked. Sponge Screener appends it after the quadrant phrase in the Notes column.">
             <div class="markbar-buttons">
               <button id="cancel" type="button" class="button" disabled
-                      title="You discard this mark and the video plays again. The Escape key does the same.">Cancel</button>
+                      title="Discard the mark and play the video on. The Escape key does the same.">Cancel</button>
             </div>
           </div>
         </div>
@@ -272,7 +274,7 @@
       <section class="log-section log-later">
         <div class="panel-head">
           <h2 class="panel-title">To label</h2>
-          <span id="to-label-count" class="count" title="The number of points saved for later, across every video. You click one to open its video there and give it a species.">0</span>
+          <span id="to-label-count" class="count" title="The number of points saved for later across every video, each waiting for a species. A click on one in the list opens its video at that moment with the wheel on it.">0</span>
         </div>
         <div class="panel-scroll">
           <ul id="to-label" class="rows" aria-label="Points to label"></ul>
@@ -288,7 +290,7 @@
           <table id="tally" class="tally">
             <thead>
               <tr>
-                <th scope="col" title="The species code. Hover a row for the full name.">Species</th>
+                <th scope="col" title="Species codes are four letters. Each row's tooltip gives the scientific name.">Species</th>
                 <th scope="col" class="num" title="Sightings across all videos. Rows under the target are highlighted.">Seen</th>
                 <th scope="col" class="num" title="The number of videos with at least one sighting of this species.">Videos</th>
                 <th scope="col" class="num" title="The earliest survey year with a sighting of this species.">First</th>

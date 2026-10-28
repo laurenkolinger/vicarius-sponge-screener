@@ -876,9 +876,16 @@ def test_convert_mpeg2_interlaced(make_converter, samples, tools, tmp_path):
 
     record = json.loads(out_path.with_suffix(".json").read_text())
     assert record["probe"]["field_order"] == "tt"
-    assert value_after(record["args"], "-c:v") == pick_encoder(tools["ffmpeg"])
+    encoder = pick_encoder(tools["ffmpeg"])
+    assert value_after(record["args"], "-c:v") == encoder
     assert value_after(record["args"], "-vf") == "yadif"
-    assert value_after(record["args"], "-b:v") == "8M"
+    # The Mac hardware encoder takes a bitrate; libx264 (Linux, or a Mac
+    # ffmpeg built without VideoToolbox) takes a quality setting instead.
+    if encoder == convert.SOFTWARE_ENCODER:
+        assert value_after(record["args"], "-crf") == convert.SOFTWARE_CRF
+        assert "-b:v" not in record["args"]
+    else:
+        assert value_after(record["args"], "-b:v") == "8M"
     assert part_files(tmp_path / "cache") == []
 
 
