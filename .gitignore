@@ -8,3 +8,22 @@ tests/e2e/out/
 .claude/
 exports/
 .venv-track/
+
+# VICARIUS module environments and editors
+env/
+.venv/
+venv/
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Data never enters git (frames, crops, videos, exports, screening tables)
+*.jpg
+*.jpeg
+*.png
+*.mp4
+*.mov
+*.mts
+*.m2t
+inprocess/

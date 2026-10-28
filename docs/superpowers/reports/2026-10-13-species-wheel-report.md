@@ -43,7 +43,7 @@ Each task had an independent reviewer, plus a whole-branch review. Every defect 
 - A crash in the instant between renaming a relabeled point's images and writing the CSV would leave one row pointing at renamed files. Delete still recovers it.
 - Wheel slices cannot take keyboard focus with Tab; the number keys and typing cover keyboard use.
 - The "Sightings in this video" heading wraps to two lines when the count reads "1 · 1 later".
-- When two overlapping saves land out of order, Z removes the higher ID.
+- When two overlapping saves finish out of order, Z removes the higher ID.
 - Headless Chrome cannot test real full screen: the Escape key lock (hold Escape to leave), the true screen-size layout, and trackpad spin. The README lists these as manual checks.
 
 ## Rollback

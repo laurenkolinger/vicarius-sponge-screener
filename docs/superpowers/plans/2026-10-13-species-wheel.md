@@ -217,7 +217,7 @@ Functions, each with JSDoc and a TypeError naming the argument on bad input:
 - **Flash labels:** drawn by `drawOverlay` in the mark pink with dark ink, the species code and short epithet, fading over the last 400 ms. While any flash is live, a `requestAnimationFrame` loop redraws the overlay; it stops when none are left.
 - **Later marks:** amber `#ffb020`, dashed ring, tag `?` (`marksNear` passes `status` from `LabelStatus`). Scrub ticks for Later points are amber.
 - **Sightings list:** a Later row shows `Later` in amber in place of the code, `data-status="unlabeled"`. Clicking a Later row jumps there and opens the edit wheel on it; clicking a labeled row jumps and pauses as today.
-- **To label list:** a new section in the right panel between the sightings and the tally: head `To label` with `#to-label-count`, rows `.to-label-item` with the crop, the video file name (site and transect), and the time, newest first. Empty state: `No points waiting for a label.` Load it from `GET /api/observations?status=unlabeled` at start and after every save, relabel, and delete. Clicking a row: when its video is open, seek, pause, and open the edit wheel; otherwise open the video with an entry built from the row (`{key: S3Key, name: FileName, playable: extension is mp4, m4v, or mov, converted: null, status: 'in progress'}`, or the catalog entry when the folder on screen holds it), then seek to the time once the metadata loads (take precedence over the remembered position), and open the edit wheel once the seek lands.
+- **To label list:** a new section in the right panel between the sightings and the tally: head `To label` with `#to-label-count`, rows `.to-label-item` with the crop, the video file name (site and transect), and the time, newest first. Empty state: `No points waiting for a label.` Load it from `GET /api/observations?status=unlabeled` at start and after every save, relabel, and delete. Clicking a row: when its video is open, seek, pause, and open the edit wheel; otherwise open the video with an entry built from the row (`{key: S3Key, name: FileName, playable: extension is mp4, m4v, or mov, converted: null, status: 'in progress'}`, or the catalog entry when the folder on screen holds it), then seek to the time once the metadata loads (take precedence over the remembered position), and open the edit wheel once the seek completes.
 - **Done:** when `state.rows` holds Later points, toggling to done shows the refusal text from the contract as an error toast without calling the server; the server refusal is the backstop.
 - **Video browser:** a video with `unlabeled > 0` shows `· N later` after its sightings count.
 - **Tally footer:** `N sightings across all videos. M points to label.`
@@ -246,7 +246,7 @@ Functions, each with JSDoc and a TypeError naming the argument on bad input:
 
 **Interfaces:**
 - Consumes: the HTTP contract, the page hooks, `tests/fakes3.py` (`FakeS3().start()`, `.put(key, bytes)`, `.url`), `screener.server.ScreenerApp(data_dir, cache_dir, config_dir, static_dir, bucket_url, port)` and `make_server(app, host, port)`.
-- Produces: `python3 -m pytest tests -q -m e2e` runs the scenarios; screenshots land in `tests/e2e/out/` (already gitignored).
+- Produces: `python3 -m pytest tests -q -m e2e` runs the scenarios; screenshots are written to `tests/e2e/out/` (already gitignored).
 
 ### Setup in `tests/test_e2e.py` (module marked `pytest.mark.e2e`)
 
