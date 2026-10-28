@@ -34,16 +34,19 @@
     <div class="brand">
       <span class="brand-mark" aria-hidden="true"></span>
       <h1 class="brand-name">Sponge Screener</h1>
+      <span id="run-name" class="run-chip" hidden
+            title="Sponge Screener saves every sighting, image, track and export package in this VICARIUS run folder under inprocess/."></span>
     </div>
     <p id="current-video" class="current-video" title="The video that is open now.">No video open</p>
     <div class="topbar-tools">
-      <label class="field-inline" for="annotator">
+      <label class="field-inline" for="annotator-initials">
         <span class="field-label">Annotator</span>
-        <input id="annotator" class="input input-short" type="text" maxlength="12" autocomplete="off" spellcheck="false"
-               title="You type your initials here. The server writes them into the Annotator column of every sighting you save.">
+        <input id="annotator-initials" class="input input-short" type="text" maxlength="12" autocomplete="off" spellcheck="false"
+               placeholder="Initials" autocapitalize="characters"
+               title="Type your initials. VICARIUS fills them in from your sign-in, and Sponge Screener writes them into the Annotator column of every sighting.">
       </label>
       <button id="export" type="button" class="button"
-              title="You export the ground-truth package. The server copies both tables and every frame and crop into a dated folder inside the OnDeck Drive folder.">Export</button>
+              title="Export the ground-truth package. Sponge Screener copies the tables, the tracks and every labeled frame and crop into a dated spongeGroundTruth folder in the run's exports folder, or in the export_root that settings.json names.">Export</button>
       <button id="guide-toggle" type="button" class="button" aria-expanded="false" aria-controls="guide"
               title="You open the species guide: reference photos and the ID guide description for a species. The I key opens and closes it too.">Guide</button>
       <button id="help-toggle" type="button" class="button button-icon" aria-label="Keyboard shortcuts" aria-expanded="false" aria-controls="help"
@@ -78,6 +81,7 @@
         <ul id="videos" class="rows" aria-label="Videos"></ul>
         <p id="browser-empty" class="empty" hidden></p>
       </div>
+      <p class="credit">Sponge Screener - built by Lauren Olinger</p>
     </aside>
 
     <section class="center" aria-label="Player">

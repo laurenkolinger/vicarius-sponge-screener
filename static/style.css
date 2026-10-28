@@ -318,6 +318,25 @@ kbd {
   text-transform: uppercase;
 }
 
+/* The VICARIUS run this page saves into: a status chip, not a control. */
+.run-chip {
+  max-width: 22ch;
+  overflow: hidden;
+  padding: 2px 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.run-chip[hidden] {
+  display: none;
+}
+
 .current-video {
   flex: 1 1 auto;
   min-width: 0;
@@ -386,6 +405,15 @@ kbd {
   font-weight: 700;
   letter-spacing: 0.09em;
   text-transform: uppercase;
+}
+
+/* Attribution at the foot of the video list. */
+.credit {
+  flex: none;
+  padding: 6px 12px 8px;
+  border-top: 1px solid var(--line);
+  color: var(--text-3);
+  font-size: 12px;
 }
 
 .panel-scroll {

@@ -1,0 +1,141 @@
+# ==============================================================================
+# Sponge Screener (sponge_screener): module contract
+# ==============================================================================
+# VICARIUS reads this file to list the module, mint its run folders, launch its
+# window on port 5098 and bind its outputs to the data dictionary. The window
+# is the standard-library web app in screener/, started by
+# scripts/launch_sponge_screener.sh as `screener.py --vicarius`; each run
+# folder under inprocess/ is one screening dataset. tests/test_module_yaml.py
+# fails when the version, the port or the launch script drift from the code.
+# display_name and tags are working values waiting for Lauren's answer.
+# ==============================================================================
+
+name: "sponge_screener"
+display_name: "Sponge Screener"   # working name, waiting for Lauren
+tags: ["TCRMP", "AI"]             # working tags, waiting for Lauren
+hidden: false
+hidden_reason: ""
+version: "1.2.0"                  # equals screener.config.VERSION (tests/test_module_yaml.py)
+description: "Sponge Screener builds sponge ground truth from TCRMP transect video streamed from the public uviai bucket. A person clicks a sponge and picks its species in a wheel; the screener saves a table row, the full frame and a crop, follows the sponge through the video, and exports a dated package for OnDeck AI."
+author: "Lauren K Olinger"
+created: "2026-10-27"
+type: "annotate"
+
+inputs:
+  - name: "transect_videos"
+    type: "file"
+    formats: [".mp4", ".m4v", ".mov", ".mts", ".m2t", ".avi", ".mxf", ".wmv"]
+    location: "the public uviai S3 bucket (https://uviai.s3.us-west-2.amazonaws.com), prefix TCRMP_video_ondeck/, streamed read only; chunks and converted copies are cached under the work folder of config/vicarius.ini (default /mnt/tear/sponge_screener/cache)"
+    required: true
+    description: "TCRMP transect videos, named TCRMP{YYYYMMDD}_video_{SITECODE}_T{N}.{ext}. Chrome plays MP4, M4V and MOV directly; the screener converts the archive formats (AVCHD, HDV, DV, MXF, WMV) with FFmpeg before they play."
+  - name: "species_list"
+    type: "file"
+    formats: [".csv"]
+    location: "config/species.csv in the clone"
+    required: true
+    description: "The sponge species a person can pick: four-letter code, scientific name, ID guide part and default pin key."
+  - name: "site_names"
+    type: "file"
+    formats: [".csv"]
+    location: "config/sites.csv in the clone"
+    required: true
+    description: "TCRMP site codes and site names; the Site column of every sighting carries the name."
+
+# ------------------------------------------------------------------------------
+# OUTPUTS: every run folder (inprocess/run_<YY-MM-DD>_<INITIALS>/) is the
+# screener's data folder. Each artifact binds to a draft descriptor under
+# vicarius/_METADATA/dictionary/datasets/ (staged with the harness branch).
+# ------------------------------------------------------------------------------
+outputs:
+  - dataset: "sponge_screener_observations"
+    path_template: "${run_dir}/observations.csv"
+    eml: true
+  - dataset: "sponge_screener_images"          # full frames, JPEG
+    path_template: "${run_dir}/frames/{frame_file_name}"
+    eml: true
+  - dataset: "sponge_screener_images"          # sponge crops, PNG
+    path_template: "${run_dir}/crops/{crop_file_name}"
+    eml: true
+  - dataset: "sponge_screener_videos_screened"
+    path_template: "${run_dir}/videos_screened.csv"
+    eml: true
+  - dataset: "sponge_screener_tracks"
+    path_template: "${run_dir}/tracks/{sighting_id}.json"
+    eml: true
+  - dataset: "sponge_screener_export"          # one folder per export
+    path_template: "${run_dir}/exports/spongeGroundTruth_{export_date}/"
+    eml: true
+
+# ------------------------------------------------------------------------------
+# PARAMETERS: the settings a run keeps. They are set in the window or in the
+# files named, not on the VICARIUS launch form; each description is the
+# tooltip text for that setting.
+# ------------------------------------------------------------------------------
+parameters:
+  - name: "annotator"
+    type: "string"
+    default: ""
+    required: true
+    description: "Type your initials in the Annotator field. VICARIUS fills them in from your sign-in, and Sponge Screener writes them into every sighting and refuses to save one without them."
+  - name: "pins"
+    type: "list"
+    default: ["ACAU", "AFUL", "CDEL", "MLAE", "CPLI", "ACRA", "ACOM", "XMUT"]
+    required: false
+    description: "Pin up to ten species to the number keys 1 to 9 and 0. A video marked done counts every pinned species with no sighting as absent, and each run keeps its own pins in settings.json."
+  - name: "export_root"
+    type: "string"
+    default: "${run_dir}/exports"
+    required: false
+    description: "Set export_root in the run's settings.json to send packages to another folder, such as a synced OnDeck folder. Sponge Screener writes each package as spongeGroundTruth_<YYYYMMDD> inside it."
+  - name: "work_root"
+    type: "string"
+    default: "/mnt/tear/sponge_screener"
+    required: false
+    description: "Set work_root in config/vicarius.ini to move the video cache, capped at 60 GB. Sponge Screener refuses a folder inside the module folder, which the drive sync copies, and a folder whose disk is not mounted."
+
+runtime:
+  python_version: ">=3.9"
+  gpu_required: false
+  external_software: "FFmpeg and ffprobe (system, /usr/bin) for the archive formats; optional .venv-track/ with OpenCV (contrib build) and numpy for sponge tracking"
+  dependencies: "Python standard library only; requirements.txt for the tests, requirements-track.txt for tracking"
+  tested_os:
+    - "Ubuntu 24.04"
+    - "macOS 15"
+  estimated_time: "interactive; about 2.5 to 4.5 s of processor time to track one sighting"
+
+cli:
+  main_script: "scripts/launch_sponge_screener.sh"
+  interactive: false
+
+# ------------------------------------------------------------------------------
+# VICARIUS UI: launcher style. VICARIUS mints each run folder
+# (run_<YY-MM-DD>_<INITIALS> under inprocess/), starts the window app with the
+# port as its only argument, and opens it with ?project_dir= and ?initials=.
+# The app holds no GPU and keeps no queue, so it does not start with the desktop.
+# ------------------------------------------------------------------------------
+ui:
+  style: launcher
+  launch:
+    script: "scripts/launch_sponge_screener.sh"
+    port: 5098
+    url: "http://127.0.0.1:5098"
+    window: true
+    autostart: false
+  runs:
+    dir: "inprocess"
+    pattern: "run_*"
+    status_source: "project.json"
+    naming: "auto"
+
+studies: []
+
+notes: |
+  - Window on port 5098, bound to 127.0.0.1. Standalone, python3 screener.py
+    still serves on 8770 with data/ and cache/ inside the clone.
+  - Each run folder is one screening dataset with its own sightings (IDs from
+    ID001), settings, tracks and export packages. The page names its run on
+    every call, so two windows on two runs never mix.
+  - Timestamps in LoggedAt, FirstOpened and MarkedDone are UTC, the convention
+    of the January 2026 package sent to OnDeck AI.
+  - The video cache never sits on the synced drive: config/vicarius.ini names
+    the work folder (default /mnt/tear/sponge_screener).

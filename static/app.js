@@ -13,6 +13,10 @@
  * own node tests; wheel_view.js draws the wheel. This file wires those pieces to the DOM,
  * the video element, and the HTTP contract of screener/server.py. Server text reaches the
  * DOM through textContent only.
+ *
+ * Under VICARIUS (the server says it keeps runs), the page reads its run folder from
+ * ?project_dir=, asks the server for the run's name, and names that run on every call;
+ * vicarius_run.js holds those rules and the signed-in initials rule.
  */
 
 import {
@@ -79,6 +83,14 @@ import {
 import { createWheel } from './wheel_view.js';
 import { createScrubber } from './scrub.js';
 import { markAt, marksAt, readTrackAnswer } from './track_math.js';
+import {
+  RUN_HEADER,
+  initialsFromSearch,
+  projectDirFromSearch,
+  startingInitials,
+  upperCaseAsTyped,
+  withRun,
+} from './vicarius_run.js';
 
 // ------------------------------------------------------------------ constants
 
@@ -143,6 +155,8 @@ const STORAGE = {
   speed: 'screener.speed.v2',
 };
 const IDLE_TEXT = 'Pick a video from the list on the left. Then click a sponge and pick its species in the wheel.';
+const NO_RUN_TEXT = 'Open Sponge Screener from a run: on the VICARIUS desktop, open the Sponge Screener card and pick New run or a run.';
+const NO_INITIALS_TEXT = 'Type your initials in Annotator before you log sightings.';
 
 // ---------------------------------------------------------------------- state
 
@@ -153,6 +167,7 @@ const IDLE_TEXT = 'Pick a video from the list on the left. Then click a sponge a
  */
 const state = {
   mode: 'screening',
+  run: '',
   key: null,
   name: null,
   source: null,
@@ -254,7 +269,8 @@ function byId(id) {
 
 const dom = {
   currentVideo: byId('current-video'),
-  annotator: byId('annotator'),
+  annotator: byId('annotator-initials'),
+  runName: byId('run-name'),
   exportButton: byId('export'),
   helpToggle: byId('help-toggle'),
   help: byId('help'),
@@ -433,6 +449,9 @@ async function request(method, path, body) {
   const options = { method, headers: {} };
   if (method !== 'GET') {
     options.headers[MUTATION_HEADER] = '1';
+  }
+  if (state.run) {
+    options.headers[RUN_HEADER] = state.run;
   }
   if (body !== undefined) {
     options.headers['Content-Type'] = 'application/json';
@@ -3005,7 +3024,7 @@ function cropThumb(row) {
   const thumb = el('img', {
     class: 'sighting-thumb',
     attrs: {
-      src: `/media/crops/${encodeURIComponent(row.CropFileName || '')}`,
+      src: withRun(`/media/crops/${encodeURIComponent(row.CropFileName || '')}`, state.run),
       alt: '',
       width: '44',
       height: '44',
@@ -3420,8 +3439,62 @@ async function saveAnnotator() {
     toast(`Annotator set to ${state.annotator}`);
   } catch (error) {
     dom.annotator.setAttribute('aria-invalid', 'true');
-    toast(`The annotator was not saved, so sightings still carry ${state.annotator}. ${endSentence(error.message)}`, 'error');
+    const carried = state.annotator ? `, so sightings still carry ${state.annotator}` : '';
+    toast(`The annotator was not saved${carried}. ${endSentence(error.message)}`, 'error');
   }
+}
+
+/**
+ * Start the annotator field on the signed-in initials: a valid ?initials= first, then what
+ * the run remembered, never a default. A URL value that differs from the remembered one is
+ * saved, so the sightings carry it. A field that stays empty is marked and explained.
+ * @returns {Promise<void>} Settles after the server stored or refused the URL initials.
+ */
+async function seedInitials() {
+  const fromUrl = initialsFromSearch(window.location.search);
+  const start = startingInitials(fromUrl, state.annotator);
+  if (start && start !== state.annotator) {
+    dom.annotator.value = start;
+    await saveAnnotator();
+  }
+  if (!state.annotator) {
+    dom.annotator.setAttribute('aria-invalid', 'true');
+    toast(NO_INITIALS_TEXT, 'error');
+  }
+}
+
+/**
+ * Join the VICARIUS run the page was opened on. A standalone server keeps no runs, and the
+ * page goes on as before. Under VICARIUS the page needs ?project_dir= and a run the server
+ * accepts; without one it says how to open a run and loads nothing else.
+ * @returns {Promise<boolean>} True when the page may load its data.
+ */
+async function joinRun() {
+  let health;
+  try {
+    health = await request('GET', '/api/health');
+  } catch (error) {
+    setStatus('error', `The server did not answer. ${endSentence(error.message)}`);
+    return false;
+  }
+  if (!health.runs) {
+    return true;
+  }
+  const projectDir = projectDirFromSearch(window.location.search);
+  if (!projectDir) {
+    setStatus('error', NO_RUN_TEXT);
+    return false;
+  }
+  try {
+    const answer = await request('POST', '/api/project/open', { project_dir: projectDir });
+    state.run = typeof answer.run === 'string' ? answer.run : '';
+  } catch (error) {
+    setStatus('error', `${endSentence(error.message)} ${NO_RUN_TEXT}`);
+    return false;
+  }
+  dom.runName.textContent = state.run;
+  dom.runName.hidden = !state.run;
+  return Boolean(state.run);
 }
 
 /**
@@ -4120,6 +4193,10 @@ function wireEvents() {
   dom.sightings.addEventListener('click', onSightingsClick);
   dom.toLabel.addEventListener('click', onToLabelClick);
   dom.annotator.addEventListener('change', saveAnnotator);
+  dom.annotator.addEventListener('input', () => {
+    upperCaseAsTyped(dom.annotator);
+    dom.annotator.removeAttribute('aria-invalid');
+  });
   dom.exportButton.addEventListener('click', exportPackage);
   dom.helpToggle.addEventListener('click', () => toggleHelp());
   dom.helpClose.addEventListener('click', () => toggleHelp(false));
@@ -4151,9 +4228,11 @@ function restorePreferences() {
 }
 
 /**
- * Start the page: wire the events, then load the species, the tally, the To label list,
- * and the folder that was open last time.
- * @returns {Promise<void>} Settles after the first requests returned.
+ * Start the page: wire the events, join the VICARIUS run when the server keeps runs, then
+ * load the species (and start the annotator on the signed-in initials), the tally, the To
+ * label list, and the folder that was open last time.
+ * @returns {Promise<void>} Settles after the first requests returned, or at once when the
+ *   page has no run to work in.
  */
 async function start() {
   wireEvents();
@@ -4167,10 +4246,13 @@ async function start() {
   renderDone();
   renderTransport();
 
+  if (!(await joinRun())) {
+    return;
+  }
   const remembered = storageGet(STORAGE.prefix);
   const first = remembered && remembered.startsWith(ROOT_PREFIX) ? remembered : ROOT_PREFIX;
   await Promise.all([
-    loadSpecies(),
+    loadSpecies().then(() => (state.speciesError ? undefined : seedInitials())),
     refreshTally(),
     refreshToLabel(),
     loadCatalog(first).then(() => (
