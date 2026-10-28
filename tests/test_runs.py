@@ -389,6 +389,24 @@ def test_export_goes_into_the_run_and_logs_it(vicarius, runs_root):
     assert record["access_log"][-1]["purpose"] == f"Exported {package.name} with 1 sighting"
 
 
+def test_run_settings_keep_a_relative_export_folder_that_follows_the_run(vicarius, runs_root, tmp_path, fake, monkeypatch):
+    set_initials(vicarius, RUN_A)
+    assert json.loads((runs_root / RUN_A / "settings.json").read_text())["export_root"] == "exports"
+    vicarius.client.post("/api/observations", observation(), headers=in_run(RUN_A))
+    vicarius.stop()
+    moved_root = tmp_path / "moved" / "inprocess"
+    moved_root.parent.mkdir()
+    (runs_root).rename(moved_root)
+    monkeypatch.setenv("VICARIUS_LOCKS_PATH", str(tmp_path / "no-locks.json"))
+    again = start_app(tmp_path / "second", fake.url, runs_root=moved_root)
+    try:
+        answer = again.client.post("/api/export", {}, headers=in_run(RUN_A))
+        assert answer.status == 200, answer.body
+        assert Path(answer.json()["path"]).parent == moved_root / RUN_A / "exports"
+    finally:
+        again.stop()
+
+
 def test_a_broken_project_json_never_stops_screening(vicarius, runs_root, capsys):
     set_initials(vicarius, RUN_A)
     (runs_root / RUN_A / "project.json").write_text("{broken", encoding="utf-8")

@@ -458,7 +458,8 @@ class ScreenerApp:
             existing = self._workspaces.get(run)
             if existing is not None:
                 return existing
-            opened = self._open_workspace(folder, run, folder / PROJECT_FILE, folder / EXPORTS_FOLDER)
+            # A relative export folder, so settings.json stays right if the run folder moves.
+            opened = self._open_workspace(folder, run, folder / PROJECT_FILE, Path(EXPORTS_FOLDER))
             self._workspaces[run] = opened
             return opened
 
@@ -837,9 +838,10 @@ class ScreenerApp:
     def export(self, workspace: Optional[Workspace] = None) -> Dict[str, Any]:
         """Write the dated export package into the export folder from the settings, and log it in the run.
 
-        A VICARIUS run's export folder is ``<run folder>/exports`` unless its
-        settings.json names another; the folder is created there when missing.
-        The run's project.json then shows the export step done.
+        A relative export folder is read from the data folder. A VICARIUS
+        run's export folder is ``exports``, so ``<run folder>/exports``, unless
+        its settings.json names another; that default folder is created when
+        missing. The run's project.json then shows the export step done.
 
         Args:
             workspace: The workspace the request named; None for the standalone one.
@@ -854,6 +856,8 @@ class ScreenerApp:
         """
         chosen = self._pick(workspace)
         export_root = Path(chosen.settings().export_root)
+        if not export_root.is_absolute():
+            export_root = chosen.data_dir / export_root
         if chosen.name is not None and export_root == chosen.data_dir / EXPORTS_FOLDER:
             try:
                 export_root.mkdir(exist_ok=True)
