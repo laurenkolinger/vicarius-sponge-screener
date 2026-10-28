@@ -32,7 +32,6 @@ PAN_SPEED = PAN_PIXELS_PER_SECOND / CLIP_WIDTH
 TEXTURE_WIDTH = CLIP_WIDTH + PAN_PIXELS_PER_SECOND * CLIP_SECONDS
 BLUR_SIGMA = 2.5
 PAN_SEED = 11
-OTHER_SEED = 22
 
 
 def pan_texture(seed: int) -> str:
@@ -50,12 +49,16 @@ def pan_texture(seed: int) -> str:
 
 
 PAN_FILTER = pan_texture(PAN_SEED)
-# The pan clip cross-fading into another texture with the same motion, from 5.5 s to 6.5 s:
-# the tracker can follow the motion, but the patch stops looking like the sighting.
+# The pan clip cross-fading into its own negative with the same motion, from 5.5 s to 6.5 s:
+# the tracker can follow the motion, but the patch stops looking like the sighting. The
+# negative correlates at -1 with the sighting's patch, so the score falls under the floor on
+# every FFmpeg build. A second random texture did not: two unrelated textures of blobs this
+# size still correlate at about 0.1 on a 43 pixel patch with Ubuntu's FFmpeg 6.1, above the
+# 0.05 floor, so the direction ran to its limit there.
 FADE_START_SECONDS = 5.5
 FADE_SECONDS = 1.0
 FADE_FILTER = (
-    f"{pan_texture(PAN_SEED)}[a];{pan_texture(OTHER_SEED)}[b];"
+    f"{pan_texture(PAN_SEED)}[a];{pan_texture(PAN_SEED)},negate[b];"
     f"[a][b]xfade=transition=fade:duration={FADE_SECONDS:g}:offset={FADE_START_SECONDS:g}[out0]"
 )
 # The worker drops a frame whose patch scores under this likeness to the sighting.
