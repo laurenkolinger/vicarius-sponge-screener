@@ -1,4 +1,4 @@
-"""Start Sponge Screener: serve the app on 127.0.0.1 and open it in Chrome.
+"""Start Sponge Lab: serve the app on 127.0.0.1 and open it in Chrome.
 
 Run ``python3 screener.py``. Options set the port, the data and cache
 folders, and the bucket URL, and ``--no-browser`` leaves the browser closed.
@@ -45,7 +45,7 @@ def parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(
         prog="screener.py",
-        description="Serve Sponge Screener on 127.0.0.1 and open it in Google Chrome.",
+        description="Serve Sponge Lab on 127.0.0.1 and open it in Google Chrome.",
     )
     parser.add_argument("--port", type=int, default=config.PORT, help=f"port to listen on (default {config.PORT}; 0 picks a free port)")
     parser.add_argument("--no-browser", action="store_true", help="do not open a browser window")
@@ -113,19 +113,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except OSError as error:
         sys.stderr.write(
             f"screener: could not listen on {config.HOST}:{args.port}: {error}. "
-            "Is another Sponge Screener running? Stop it, or pass --port with another number.\n"
+            "Is another Sponge Lab running? Stop it, or pass --port with another number.\n"
         )
         app.close()
         return EXIT_FAILED
     url = f"http://{config.HOST}:{app.port}/"
-    print(f"Sponge Screener listening on {url}", flush=True)
+    print(f"Sponge Lab listening on {url}", flush=True)
     print("Press Ctrl+C to stop.", flush=True)
     if not args.no_browser:
         open_browser(url)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nStopping Sponge Screener.", flush=True)
+        print("\nStopping Sponge Lab.", flush=True)
     finally:
         server.server_close()
         app.close()

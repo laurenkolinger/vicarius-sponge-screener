@@ -1,4 +1,4 @@
-// Tests for static/geometry.js, the pure calculations behind the Sponge Screener page.
+// Tests for static/geometry.js, the pure calculations behind the Sponge Lab page.
 //
 // Run with: node --test /Users/laurenkay/SpongeScreener/tests/test_geometry.mjs
 //
@@ -583,12 +583,26 @@ test('percentText rounds a fraction and stays between 0 and 100', () => {
   assert.equal(g.percentText(NaN), '0%');
 });
 
-test('statusLabel adds the sighting count to videos that were opened', () => {
-  assert.equal(g.statusLabel('new', 0), 'new');
-  assert.equal(g.statusLabel('in progress', 3), 'in progress · 3');
-  assert.equal(g.statusLabel('done', 0), 'done · 0');
-  assert.equal(g.statusLabel('in progress', undefined), 'in progress · 0');
-  assert.equal(g.statusLabel('', 2), 'new');
+test('videoProgress names tagged, review, and percent, and leaves out what is empty', () => {
+  assert.equal(g.videoProgress(31, 5, 62), '31 tagged · 5 review · 62%');
+  assert.equal(g.videoProgress(31, 0, null), '31 tagged');
+  assert.equal(g.videoProgress(0, 2, null), '0 tagged · 2 review');
+  assert.equal(g.videoProgress(0, 0, 40), '40%');
+  assert.equal(g.videoProgress(0, 0, null), 'new');
+  assert.equal(g.videoProgress(undefined, undefined, undefined), 'new');
+});
+
+test('speciesTier reads the guide part', () => {
+  assert.equal(g.speciesTier('1'), 'original');
+  assert.equal(g.speciesTier(2), 'added');
+  for (const part of ['3', '', null, undefined, 'constructor']) {
+    assert.equal(g.speciesTier(part), 'other');
+  }
+});
+
+test('abbreviatedName gives the genus initial and the epithet', () => {
+  assert.equal(g.abbreviatedName('Aplysina cauliformis'), 'A. cauliformis');
+  assert.equal(g.abbreviatedName('Unknown sponge'), 'Unknown sponge');
 });
 
 test('splitVideoName separates the shared TCRMP lead from the part that tells videos apart', () => {
@@ -606,7 +620,7 @@ test('splitVideoName separates the shared TCRMP lead from the part that tells vi
 });
 
 test('formatLabel words the format badge from the playable flag and the conversion state', () => {
-  assert.deepEqual(g.formatLabel(true, 'none'), { text: 'plays now', kind: 'plays' });
+  assert.deepEqual(g.formatLabel(true, 'none'), { text: '', kind: 'plays' });
   assert.deepEqual(g.formatLabel(false, 'none'), { text: 'needs conversion', kind: 'convert' });
   assert.deepEqual(g.formatLabel(false, 'queued'), { text: 'conversion queued', kind: 'convert' });
   assert.deepEqual(g.formatLabel(false, 'running'), { text: 'converting', kind: 'convert' });
@@ -614,7 +628,7 @@ test('formatLabel words the format badge from the playable flag and the conversi
   assert.deepEqual(g.formatLabel(true, 'done'), { text: 'converted', kind: 'plays' });
   assert.deepEqual(g.formatLabel(false, 'failed'), { text: 'conversion failed', kind: 'failed' });
   assert.deepEqual(g.formatLabel(true, 'failed'), { text: 'conversion failed', kind: 'failed' });
-  assert.deepEqual(g.formatLabel(true, undefined), { text: 'plays now', kind: 'plays' });
+  assert.deepEqual(g.formatLabel(true, undefined), { text: '', kind: 'plays' });
 });
 
 test('queueProgress reads a prefetch answer and a conversion answer', () => {
@@ -756,7 +770,7 @@ test('unsavedSummary names one unsaved pick and counts several', () => {
   assert.equal(g.unsavedSummary([]), '');
   assert.equal(g.unsavedSummary([{ code: 'ACAU', name: 'Aplysina cauliformis', time: 96.3 }]),
     'ACAU Aplysina cauliformis at 01:36 not saved.');
-  assert.equal(g.unsavedSummary([{ code: null, name: '', time: 61 }]), 'The Later point at 01:01 not saved.');
+  assert.equal(g.unsavedSummary([{ code: null, name: '', time: 61 }]), 'The review point at 01:01 not saved.');
   assert.equal(g.unsavedSummary([{ code: 'ZZZZ', name: '', time: 5 }]), 'ZZZZ at 00:05 not saved.');
   assert.equal(g.unsavedSummary([{ code: 'ACAU', name: 'a', time: 1 }, { code: null, name: '', time: 2 }]),
     '2 sightings not saved.');
@@ -773,14 +787,14 @@ test('leaveBlocked holds the page while a save is in flight or unsaved', () => {
 test('sightingsCount counts labeled rows and names the Later points apart', () => {
   assert.equal(g.sightingsCount([]), '0');
   assert.equal(g.sightingsCount([{ LabelStatus: 'labeled' }, { SpeciesCode: 'ACAU' }]), '2');
-  assert.equal(g.sightingsCount([{ LabelStatus: 'labeled' }, { LabelStatus: 'unlabeled' }]), '1 · 1 later');
-  assert.equal(g.sightingsCount([{ LabelStatus: 'unlabeled' }, { LabelStatus: 'unlabeled' }]), '0 · 2 later');
+  assert.equal(g.sightingsCount([{ LabelStatus: 'labeled' }, { LabelStatus: 'unlabeled' }]), '1 · 1 review');
+  assert.equal(g.sightingsCount([{ LabelStatus: 'unlabeled' }, { LabelStatus: 'unlabeled' }]), '0 · 2 review');
 });
 
 test('exportSummary counts the package and gives the folder its own sentence, with no period on the path', () => {
   assert.equal(g.exportSummary({ observations: 5, path: '/x/pkg', unlabeled_left_out: 0 }), 'Exported 5 sightings. Folder: /x/pkg');
-  assert.equal(g.exportSummary({ observations: 1, path: '/x/pkg', unlabeled_left_out: 1 }), 'Exported 1 sighting. 1 Later point left out. Folder: /x/pkg');
-  assert.equal(g.exportSummary({ observations: 3, path: '/x/pkg', unlabeled_left_out: 2 }), 'Exported 3 sightings. 2 Later points left out. Folder: /x/pkg');
+  assert.equal(g.exportSummary({ observations: 1, path: '/x/pkg', unlabeled_left_out: 1 }), 'Exported 1 sighting. 1 review point left out. Folder: /x/pkg');
+  assert.equal(g.exportSummary({ observations: 3, path: '/x/pkg', unlabeled_left_out: 2 }), 'Exported 3 sightings. 2 review points left out. Folder: /x/pkg');
   assert.equal(g.exportSummary({ observations: 3, path: '/x/pkg' }), 'Exported 3 sightings. Folder: /x/pkg');
 });
 
@@ -796,7 +810,7 @@ test('latestUnsaved finds the most recent unsaved pick of one video', () => {
 
 test('discardedText names the species and the time of a discarded pick', () => {
   assert.equal(g.discardedText('ACAU', 96.3), 'Discarded the unsaved ACAU pick at 01:36');
-  assert.equal(g.discardedText(null, 61), 'Discarded the unsaved Later point at 01:01');
+  assert.equal(g.discardedText(null, 61), 'Discarded the unsaved review point at 01:01');
 });
 
 test('endSentence closes server text with a period so the next sentence reads cleanly', () => {
@@ -815,4 +829,14 @@ test('stripDataUrl returns the base64 part of a data URL', () => {
   assert.equal(g.stripDataUrl('AAAA'), 'AAAA');
   assert.throws(() => g.stripDataUrl(null), TypeError);
   assert.throws(() => g.stripDataUrl('data:,'), RangeError, 'an empty canvas gives "data:,"');
+});
+
+test('filterSpecies finds a species by a name it used to have', () => {
+  const list = [
+    { code: 'ACAU', name: 'Aplysina cauliformis' },
+    { code: 'ACOM', name: 'Amphimedon nodosa', name_changes: [{ name: 'Amphimedon compressa' }] },
+  ];
+  assert.deepEqual(g.filterSpecies(list, 'compressa').map((item) => item.code), ['ACOM']);
+  assert.deepEqual(g.filterSpecies(list, 'nodosa').map((item) => item.code), ['ACOM']);
+  assert.deepEqual(g.filterSpecies(list, 'mpressa').map((item) => item.code), ['ACOM']);
 });

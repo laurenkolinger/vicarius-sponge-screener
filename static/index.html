@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Sponge Screener</title>
+  <title>Sponge Lab by VICAR</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/static/style.css">
   <script type="module" src="/static/app.js"></script>
@@ -33,7 +33,7 @@
   <header class="topbar">
     <div class="brand">
       <span class="brand-mark" aria-hidden="true"></span>
-      <h1 class="brand-name">Sponge Screener</h1>
+      <h1 class="brand-name">Sponge Lab by VICAR</h1>
     </div>
     <p id="current-video" class="current-video" title="The video that is open now.">No video open</p>
     <div class="topbar-tools">
@@ -103,7 +103,7 @@
           <div class="scrub-wrap">
             <div id="scrub-marks" class="scrub-marks" aria-hidden="true"></div>
             <input id="scrub" class="scrub" type="range" min="0" max="0" step="0.01" value="0" aria-label="Position in the video" disabled
-                   title="You drag to move through the video. The pink ticks show the sightings saved in this video, and the amber ticks show the points saved for later.">
+                   title="You drag to move through the video. The pink ticks show the sightings saved in this video, and the amber ticks show the points to review.">
           </div>
           <div class="transport-row">
             <button id="play" type="button" class="button button-icon" aria-label="Play" disabled
@@ -126,11 +126,6 @@
             <button id="grid" type="button" class="button button-icon" aria-label="Quadrant grid and center line" aria-pressed="true"
                     title="You show or hide the quadrant lines and the center line. The G key does the same.">
               <svg class="icon" aria-hidden="true"><use href="#i-grid"></use></svg>
-            </button>
-            <button id="done" type="button" class="button button-toggle" aria-pressed="false" disabled
-                    title="You mark this video as fully screened. OnDeck then treats a target species with no rows here as absent. The D key does the same.">
-              <svg class="icon" aria-hidden="true"><use href="#i-check"></use></svg>
-              <span id="done-label">Done</span>
             </button>
             <button id="next" type="button" class="button button-icon" aria-label="Next video"
                     title="You open the next video in the list. The N key does the same.">
@@ -172,6 +167,7 @@
               <svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg>
             </button>
           </div>
+          <p id="guide-notice" class="guide-notice" hidden></p>
           <p id="guide-text" class="guide-text"></p>
           <div id="guide-images" class="guide-images"></div>
         </div>
@@ -211,7 +207,6 @@
                 <div><dt><kbd>P</kbd></dt><dd>Show or hide the species keys panel</dd></div>
                 <div><dt><kbd>G</kbd></dt><dd>Show or hide the grid and center line</dd></div>
                 <div><dt><kbd>Z</kbd></dt><dd>Undo the last pick: discard an unsaved one, else remove the last sighting</dd></div>
-                <div><dt><kbd>D</kbd></dt><dd>Mark the video done, or reopen it</dd></div>
                 <div><dt><kbd>N</kbd></dt><dd>Open the next video in the list</dd></div>
                 <div><dt><kbd>?</kbd></dt><dd>Open or close this card</dd></div>
               </dl>
@@ -224,7 +219,7 @@
                 <div><dt><kbd>A</kbd> to <kbd>Z</kbd></dt><dd>Filter the wheel; <kbd>⌫</kbd> edits</dd></div>
                 <div><dt><kbd>↑</kbd> <kbd>↓</kbd>, scroll</dt><dd>Spin the outer ring, or move through the matches</dd></div>
                 <div><dt><kbd>Enter</kbd></dt><dd>Save the highlighted match; the video stays paused</dd></div>
-                <div><dt><kbd>Space</kbd>, the hub</dt><dd>Later: save without a species. On a saved mark: Unlabel or Keep. While you type a filter, Space types a space</dd></div>
+                <div><dt><kbd>Space</kbd>, the hub</dt><dd>Review: save without a species. On a saved mark: Unlabel or Keep. While you type a filter, Space types a space</dd></div>
                 <div><dt><kbd>⌫</kbd> twice</dt><dd>On a saved mark: delete it with its images and track. The first press turns the hub red; any other key cancels</dd></div>
                 <div><dt><kbd>Shift</kbd> + a pick</dt><dd>Save and play on</dd></div>
                 <div><dt><kbd>,</kbd> <kbd>.</kbd>, <kbd>←</kbd> <kbd>→</kbd></dt><dd>Step one frame; the mark and the wheel stay</dd></div>
@@ -244,6 +239,11 @@
           <p id="species-error-text" class="notice-text"></p>
           <button id="species-retry" type="button" class="button"
                   title="You ask the server for the species list again.">Retry</button>
+        </div>
+        <div class="phase-legend deck-legend" aria-hidden="true">
+          <span class="phase-chip" data-tier="original">Phase 1</span>
+          <span class="phase-chip" data-tier="added">Phase 2</span>
+          <span class="phase-chip" data-tier="other">Phase 3</span>
         </div>
         <div id="pins" class="pins" role="group" aria-label="Pinned species, keys 1 to 9 and 0"></div>
 
@@ -284,12 +284,12 @@
       </section>
       <section class="log-section log-later">
         <div class="panel-head">
-          <h2 class="panel-title">To label</h2>
-          <span id="to-label-count" class="count" title="The number of points saved for later, across every video. You click one to open its video there and give it a species.">0</span>
+          <h2 class="panel-title">Review</h2>
+          <span id="to-label-count" class="count" title="Points to review, across every video. Click one to open it.">0</span>
         </div>
         <div class="panel-scroll">
-          <ul id="to-label" class="rows" aria-label="Points to label"></ul>
-          <p id="to-label-empty" class="empty">No points waiting for a label.</p>
+          <ul id="to-label" class="rows" aria-label="Points to review"></ul>
+          <p id="to-label-empty" class="empty">Nothing to review.</p>
         </div>
       </section>
       <section class="log-section log-tally">
@@ -309,7 +309,7 @@
             </thead>
             <tbody id="tally-rows"></tbody>
           </table>
-          <p id="tally-total" class="empty" title="The number of sightings saved so far, across every video, and the points that still wait for a species.">0 sightings across all videos. 0 points to label.</p>
+          <p id="tally-total" class="empty" title="The number of sightings saved so far, across every video, and the points that still wait for a species.">0 sightings across all videos. 0 points to review.</p>
           <p id="tally-empty" class="empty" hidden>The tally did not load.</p>
         </div>
       </section>

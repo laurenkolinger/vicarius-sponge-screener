@@ -384,7 +384,7 @@ def test_catalog_shape_and_status_merge(running: Running, fake: FakeS3):
         "playable": True,
         "status": "new",
         "sightings": 0,
-        "unlabeled": 0,
+        "unlabeled": 0, "watched_percent": None,
         "converted": "none",
     }
 
@@ -446,7 +446,7 @@ def test_species_and_settings_round_trip(running: Running):
     data = answer.json()
     assert data["annotator"] == config.DEFAULT_ANNOTATOR
     assert data["tally_target"] == config.TALLY_TARGET
-    assert data["species"][0] == {"code": "ACAU", "name": "Aplysina cauliformis", "part": "1"}
+    assert data["species"][0] == {"code": "ACAU", "name": "Aplysina cauliformis", "part": "1", "name_changes": []}
     assert len(data["species"]) == 38
     assert data["pins"] == {
         "1": "ACAU", "2": "AFUL", "3": "CDEL", "4": "MLAE", "5": "CPLI",
@@ -1968,7 +1968,7 @@ def test_main_prints_bound_port_and_stops_on_sigint(fake: FakeS3, tmp_path: Path
     )
     try:
         line = process.stdout.readline()
-        assert line.startswith("Sponge Screener listening on http://127.0.0.1:"), line
+        assert line.startswith("Sponge Lab listening on http://127.0.0.1:"), line
         assert line.endswith("/\n")
         port = int(line.rsplit(":", 1)[1].rstrip("/\n"))
         assert port > 0
@@ -2122,3 +2122,39 @@ def test_coverage_needs_a_prefix(running: Running):
 def test_coverage_reports_watched_time(running: Running):
     watched_report(running, ranges=[[0, 25]])
     assert coverage_row(running)["watched"]["percent"] == 25
+
+
+def video_status(running: Running, key: str = KEY_T1) -> str:
+    """Return a video's status from the catalog."""
+    answer = running.client.get("/api/catalog?prefix=" + urllib.parse.quote(FOLDER_2024, safe="")).json()
+    return next(item for item in answer["videos"] if item["key"] == key)["status"]
+
+
+def test_full_watch_finishes_a_video_by_itself(running: Running):
+    running.client.post("/api/videos/open", {"key": KEY_T1})
+    watched_report(running, ranges=[[0, 50]])
+    assert video_status(running) == "in progress"
+    watched_report(running, ranges=[[50, 100]])
+    assert video_status(running) == "done"
+
+
+def test_full_watch_waits_for_review_points(running: Running):
+    row = save_one(running, species=None)
+    watched_report(running, ranges=[[0, 100]])
+    assert video_status(running) == "in progress"
+    answer = running.client.request("PATCH", f"/api/observations/{row['ID']}", {"species": "ACAU"})
+    assert answer.status == 200, answer.error
+    assert video_status(running) == "done"
+
+
+def test_catalog_reports_the_percent_watched(running: Running):
+    watched_report(running, ranges=[[0, 25]])
+    answer = running.client.get("/api/catalog?prefix=" + urllib.parse.quote(FOLDER_2024, safe="")).json()
+    assert next(item for item in answer["videos"] if item["key"] == KEY_T1)["watched_percent"] == 25
+
+
+def test_species_answer_carries_name_changes(running: Running):
+    species = {item["code"]: item for item in running.client.get("/api/species").json()["species"]}
+    assert species["ACOM"]["name"] == "Amphimedon nodosa"
+    assert species["ACOM"]["name_changes"][0]["name"] == "Amphimedon compressa"
+    assert species["ACAU"]["name_changes"] == []

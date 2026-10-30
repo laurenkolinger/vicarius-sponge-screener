@@ -125,7 +125,7 @@ TRACK_COLUMN_NOTES: Dict[str, str] = {
     "Score": "How closely the picture at that time matched the sponge, from 0 to 1. A higher score is a closer match.",
 }
 TRACKS_INTRO = (
-    "Sponge Screener follows each labeled sighting through its video as the camera moves. `tracks.csv` lists the "
+    "Sponge Lab follows each labeled sighting through its video as the camera moves. `tracks.csv` lists the "
     "position of the sponge at each moment, one row per track point, in sighting order and then in time order. A "
     "sighting without a track has no rows. A track covers the stretch of video in which the sponge could be "
     "followed, so it can begin after the sponge entered the frame and end before the sponge left it. The "
@@ -298,7 +298,7 @@ def _readme_text(
     lines = [
         f"# Sponge ground truth, exported {today.strftime(README_DATE_FORMAT)}",
         "",
-        f"Sponge Screener {VERSION} wrote this package. An annotator logged each sighting by pausing a TCRMP "
+        f"Sponge Lab {VERSION} wrote this package. An annotator logged each sighting by pausing a TCRMP "
         "transect video, marking the sponge, and choosing the species.",
         "",
         "## Contents",

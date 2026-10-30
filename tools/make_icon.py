@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Draw the Sponge Screener app icon as a PNG, with no image library.
+"""Draw the Sponge Lab app icon as a PNG, with no image library.
 
 The icon is the app's own marker: a magenta ring with a white outline over a
 dark rounded square, with the quadrant crosshair behind it.

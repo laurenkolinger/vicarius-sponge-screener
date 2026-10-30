@@ -1,4 +1,4 @@
-/* Sponge Screener: a dark, neutral frame around underwater video.
+/* Sponge Lab: a dark, neutral frame around underwater video.
    The grays carry no hue, so the chrome never tints how the water and the
    sponges read. Magenta belongs to the mark and to the species chosen for it,
    and the Later amber belongs to points saved without a species. */
@@ -35,7 +35,11 @@
   --wheel-slice-empty: rgba(16, 18, 22, 0.5);
   --wheel-line: rgba(255, 255, 255, 0.24);
   --wheel-lit: rgba(255, 43, 214, 0.85);
-  --wheel-match: rgba(92, 18, 80, 0.86);
+  --wheel-match: rgba(70, 70, 70, 0.86);
+  --wheel-phase-1: rgba(22, 92, 56, 0.84);
+  --wheel-phase-1-lit: rgba(109, 220, 155, 0.95);
+  --wheel-phase-2: rgba(128, 18, 106, 0.84);
+  --wheel-phase-3-lit: rgba(200, 200, 200, 0.95);
   --wheel-hub-ring: rgba(255, 255, 255, 0.75);
   --wheel-delete: #ff4a4a;
   --wheel-chip: rgba(16, 18, 22, 0.92);
@@ -537,8 +541,14 @@ kbd {
   white-space: nowrap;
 }
 
-.video-later {
-  color: var(--later);
+.match-was {
+  color: var(--amber);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.video-progress {
+  color: var(--text-2);
   font-size: 13px;
   white-space: nowrap;
 }
@@ -1300,6 +1310,14 @@ body[data-mode="marking"] .mark-summary {
   border-color: transparent;
 }
 
+.tally tr[data-tier="original"] .tally-code {
+  color: var(--green);
+}
+
+.tally tr[data-tier="added"] .tally-code {
+  color: var(--mark);
+}
+
 .tally tr[data-under="1"] td {
   background: rgba(243, 183, 63, 0.05);
 }
@@ -1679,6 +1697,15 @@ body[data-guide-dock="docked"] #guide-dock {
   white-space: nowrap;
 }
 
+.guide-notice {
+  margin: 0 0 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--amber-soft);
+  color: var(--amber);
+  font-size: 13px;
+}
+
 .guide-text {
   flex: 0 0 auto;
   max-height: 34vh;
@@ -1770,6 +1797,52 @@ body[data-guide-dock="docked"] #guide-dock {
 
 /* A viewport-sized layer inside the theater; only the wheel's own shapes take the pointer,
    so a click beside the wheel still reaches the picture. */
+.phase-legend {
+  display: flex;
+  gap: 12px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.phase-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.phase-chip::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--text-3);
+}
+
+.phase-chip[data-tier="original"]::before {
+  background: var(--green);
+}
+
+.phase-chip[data-tier="added"]::before {
+  background: var(--mark);
+}
+
+.deck-legend {
+  margin-bottom: 6px;
+}
+
+.wheel-legend {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: rgba(16, 18, 22, 0.88);
+  font-size: 11px;
+}
+
 .wheel-layer {
   position: fixed;
   inset: 0;
@@ -1878,7 +1951,23 @@ body[data-guide-dock="docked"] #guide-dock {
   opacity: 1;
 }
 
+.wheel-slice[data-tier="original"] .wheel-wedge {
+  fill: var(--wheel-phase-1);
+}
+
+.wheel-slice[data-tier="added"] .wheel-wedge {
+  fill: var(--wheel-phase-2);
+}
+
 .wheel-slice[data-lit="true"] .wheel-wedge {
+  fill: var(--wheel-phase-3-lit);
+}
+
+.wheel-slice[data-lit="true"][data-tier="original"] .wheel-wedge {
+  fill: var(--wheel-phase-1-lit);
+}
+
+.wheel-slice[data-lit="true"][data-tier="added"] .wheel-wedge {
   fill: var(--wheel-lit);
 }
 

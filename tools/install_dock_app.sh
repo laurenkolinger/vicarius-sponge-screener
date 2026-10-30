@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build "Sponge Screener.app" in ~/Applications and put it in the Dock.
+# Build "Sponge Lab.app" in ~/Applications and put it in the Dock.
 #
 # The app asks launchd to run the screener server, restarts it when the code
 # changed since it started, and opens Chrome on it. macOS stops any process an
@@ -10,7 +10,7 @@ set -euo pipefail
 
 PROJECT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="$HOME/Applications"
-APP="$APP_DIR/Sponge Screener.app"
+APP="$APP_DIR/Sponge Lab.app"
 LABEL="edu.uvi.vicar.sponge-screener.server"
 AGENT_PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 PORT="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from screener import config; print(config.PORT)' "$PROJECT")"
@@ -45,8 +45,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>Sponge Screener</string>
-  <key>CFBundleDisplayName</key><string>Sponge Screener</string>
+  <key>CFBundleName</key><string>Sponge Lab</string>
+  <key>CFBundleDisplayName</key><string>Sponge Lab</string>
   <key>CFBundleIdentifier</key><string>edu.uvi.vicar.sponge-screener</string>
   <key>CFBundleVersion</key><string>1.1.0</string>
   <key>CFBundleShortVersionString</key><string>1.1.0</string>
@@ -62,7 +62,7 @@ PLIST
 # variables need no escaping.
 cat > "$APP/Contents/MacOS/launch" <<'LAUNCH'
 #!/bin/bash
-# Start Sponge Screener and open it in Chrome. A server that started before
+# Start Sponge Lab and open it in Chrome. A server that started before
 # the code last changed is restarted, so the app always runs the newest code.
 PROJECT=__PROJECT__
 PORT="__PORT__"
@@ -104,7 +104,7 @@ if ! healthy; then
   launchctl kickstart "$SERVICE" >> "$LOG" 2>&1
   for _ in $(seq 1 "$START_WAIT_TENTHS"); do healthy && break; sleep 0.1; done
   if ! healthy; then
-    osascript -e "display alert \"Sponge Screener did not start\" message \"The reason is at the end of $LOG.\""
+    osascript -e "display alert \"Sponge Lab did not start\" message \"The reason is at the end of $LOG.\""
     exit 1
   fi
 fi
@@ -137,10 +137,10 @@ rm -rf "$(dirname "$ICONSET")"
 touch "$APP"
 
 # Add to the Dock once, then restart the Dock so it shows. The Dock stores the
-# path URL-encoded (Sponge%20Screener.app) next to the bundle identifier, so the
+# path URL-encoded (Sponge%20Lab.app) next to the bundle identifier, so the
 # check matches either form.
 if ! defaults read com.apple.dock persistent-apps 2>/dev/null \
-    | grep -q -e "edu.uvi.vicar.sponge-screener" -e "Sponge Screener.app" -e "Sponge%20Screener.app"; then
+    | grep -q -e "edu.uvi.vicar.sponge-screener" -e "Sponge Lab.app" -e "Sponge%20Lab.app"; then
   defaults write com.apple.dock persistent-apps -array-add "<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>$APP</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>"
   killall Dock
 fi

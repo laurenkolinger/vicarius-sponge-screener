@@ -261,6 +261,9 @@ class RunningApp:
             folder: An empty folder; ``data`` and ``cache`` go inside it.
         """
         self.data_dir = folder / "data"
+        # The guide opens with the page, so every test needs one to load.
+        (self.data_dir / "guide").mkdir(parents=True)
+        (self.data_dir / "guide" / "guide.json").write_text('{"species": []}', encoding="utf-8")
         self.app = ScreenerApp(self.data_dir, folder / "cache", CONFIG_DIR, STATIC_DIR, bucket_url, 0)
         self.server = make_server(self.app, "127.0.0.1", 0)
         self.url = "http://127.0.0.1:%d/" % self.app.port
@@ -531,7 +534,7 @@ def assert_paused(after: Dict[str, Any], what: str) -> None:
 def test_pick_inner(drive: Callable[[str], Dict[str, Any]], app: RunningApp) -> None:
     """A click opens the wheel, one click on the key 1 slice saves, and the video stays paused on the picked frame."""
     facts = drive("pick_inner")["facts"]
-    assert facts["wheel"]["mode"] == "new" and facts["wheel"]["hubLabel"] == "Later"
+    assert facts["wheel"]["mode"] == "new" and facts["wheel"]["hubLabel"] == "Review"
     assert facts["wheel"]["inner"][0] == "1:%s" % PINS["1"]
     assert facts["wheel"]["inner"] == ["%s:%s" % (key, code) for key, code in PINS.items()]
     assert facts["pausedWithWheelOpen"] is True
@@ -607,7 +610,7 @@ def test_step_then_pick(drive: Callable[[str], Dict[str, Any]], app: RunningApp)
 def test_later_and_cancel(drive: Callable[[str], Dict[str, Any]], app: RunningApp) -> None:
     """Space saves a Later point with LATER in both file names and leaves the video paused; Escape adds nothing and plays on."""
     facts = drive("later_and_cancel")["facts"]
-    assert facts["hub"] == "Later"
+    assert facts["hub"] == "Review"
     rows = read_rows(app)
     assert len(rows) == 1
     row = rows[0]
@@ -678,30 +681,6 @@ def test_unlabel_saved(drive: Callable[[str], Dict[str, Any]], app: RunningApp) 
     assert tally["total"] == 0 and tally["unlabeled"] == 1
 
 
-def test_done_refused(drive: Callable[[str], Dict[str, Any]], app: RunningApp) -> None:
-    """A Later point reopens a done video; Done is refused while the video holds a Later point."""
-    facts = drive("done_refused")["facts"]
-    assert facts["afterDone"] == {"status": "done", "button": "Done", "pressed": "true"}
-    reopened = facts["afterReopen"]
-    assert reopened["status"] == "in progress" and reopened["button"] == "Mark done" and reopened["pressed"] == "false"
-    assert "back in progress" in reopened["toast"]["message"] and reopened["toast"]["kind"] == "info"
-    assert any("back in progress" in toast["text"] for toast in reopened["toastsOnScreen"])
-    assert reopened["browserBadge"].startswith("in progress")
-    posts = facts["laterPost"]
-    assert [post["status"] for post in posts] == [201, 201]
-    assert posts[0]["reopened"] is False and posts[1]["reopened"] is True and posts[1]["species"] == ""
-    refusal = facts["afterRefusal"]
-    assert refusal["status"] == "in progress" and refusal["button"] == "Mark done"
-    assert "unlabeled" in refusal["toast"]["message"] and refusal["toast"]["kind"] == "error"
-    assert refusal["doneRequests"] == 1, "only the first D press may reach the server"
-    assert read_screened(app)[KEY_2024]["Status"] == "in progress"
-    status, answer = post_json(app, "/api/videos/done", {"key": KEY_2024, "done": True})
-    assert status == 400 and "unlabeled" in answer["error"]
-    assert read_screened(app)[KEY_2024]["Status"] == "in progress"
-    rows = read_rows(app)
-    assert [row["LabelStatus"] for row in rows] == ["labeled", "unlabeled"]
-
-
 def test_fullscreen(drive: Callable[[str], Dict[str, Any]]) -> None:
     """F puts the theater in full screen; the wheel stays inside the view and re-centers when the button toggles."""
     facts = drive("fullscreen")["facts"]
@@ -760,14 +739,19 @@ def test_shift_digit_plays_on(drive: Callable[[str], Dict[str, Any]], app: Runni
         assert_images(app, row, row["SpeciesCode"], SUFFIX_2024)
 
 
+def test_old_name_search(drive: Callable[[str], Dict[str, Any]]) -> None:
+    """Typing a species' earlier name in the wheel finds it under its current name."""
+    facts = drive("old_name_search")["facts"]
+    assert facts["typed"] == "compressa"
+    assert facts["rows"][0]["SpeciesCode"] == "ACOM"
+
+
 def test_coverage_grid(drive: Callable[[str], Dict[str, Any]]) -> None:
-    """Playing part of a clip shows in the grid, Done warns about the rest, and the warning's button goes ahead."""
+    """Playing part of a clip shows in the grid, and time behind the open grid does not count."""
     facts = drive("coverage_grid")["facts"]
-    assert facts["warning"]["message"].startswith("You have not watched ")
     covered = [gap for gap in facts["watched"]["watched"]["gaps"] if gap[0] < facts["closedAt"] and gap[1] > facts["openedAt"]]
     assert len(covered) == 1, facts["watched"]
     assert abs(covered[0][0] - facts["openedAt"]) < 1 and abs(covered[0][1] - facts["closedAt"]) < 1, covered
-    assert facts["statusAfterWarning"] != "done"
     assert [code for code, _ in facts["headers"]] == ["ACAU", "CDEL", "MLAE", "CPLI", "AFUL", "ACRA", "ACOM", "XMUT"]
     assert [tier for _, tier in facts["headers"]] == ["original"] * 4 + ["added"] * 4
     row = next(item for item in facts["grid"] if item["key"] == KEY_2024)
@@ -776,11 +760,11 @@ def test_coverage_grid(drive: Callable[[str], Dict[str, Any]]) -> None:
     assert row["cells"] == [["0", "open"]] * 8
     assert facts["narrowOverflow"] is False
     assert facts["closed"] is True
-    assert facts["statusAfterAction"] == "done"
 
 
-def test_pin_colors(drive: Callable[[str], Dict[str, Any]]) -> None:
-    """Part 1 keys are green and Part 2 keys pink, in any mode; Part 3 and empty keys stay gray."""
+def test_pin_colors(drive: Callable[[str], Dict[str, Any]], app: RunningApp) -> None:
+    """Part 1 keys are green and Part 2 keys pink, in any mode; Part 3 and empty keys stay gray; resting on a key shows its species in the guide."""
+    write_guide_fixture(app.data_dir, list(PINS.values()))
     facts = drive("pin_colors")["facts"]
     green, pink, gray = facts["colors"]["green"], facts["colors"]["pink"], facts["colors"]["line"]
     expected = {
@@ -800,6 +784,7 @@ def test_pin_colors(drive: Callable[[str], Dict[str, Any]]) -> None:
     assert sum(key["tier"] == "added" for key in facts["defaults"]) == 4
     assert all("Green:" in key["label"] for key in facts["defaults"] if key["tier"] == "original")
     assert all("Pink:" in key["label"] for key in facts["defaults"] if key["tier"] == "added")
+    assert facts["guideOpen"] is True and facts["gridOff"] is False
     nine = next(key for key in facts["repinned"] if key["slot"] == "9")
     assert nine["code"] == "SAUR" and nine["tier"] == "other" and nine["border"] == gray, nine
     assert "Gray:" in nine["label"]

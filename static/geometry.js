@@ -1,5 +1,5 @@
 /**
- * Pure calculations for the Sponge Screener page.
+ * Pure calculations for the Sponge Lab page.
  *
  * Nothing in this file touches the DOM, the network, or the clock, so every
  * function runs under `node --test` (see tests/test_geometry.mjs). Points and
@@ -343,7 +343,7 @@ export function formatClock(seconds) {
 
 /**
  * Rank the species that match a typed query.
- * @param {Array<{code: string, name: string}>} list Every species, in display order.
+ * @param {Array<{code: string, name: string, name_changes: ?Array<{name: string}>}>} list Every species, in display order.
  * @param {string} query What the annotator typed. Case and outer spaces are ignored.
  * @returns {Array<{code: string, name: string}>} A new array: species whose code starts
  *   with the query, then species with a word in the name that starts with the query,
@@ -368,11 +368,13 @@ export function filterSpecies(list, query) {
   for (const item of list) {
     const code = String(item.code).toLowerCase();
     const name = String(item.name).toLowerCase();
+    // An earlier name still finds the species after a rename.
+    const earlier = (item.name_changes || []).map((change) => change.name).join(' ').toLowerCase();
     if (code.startsWith(needle)) {
       codePrefix.push(item);
-    } else if (startsAtWord(name, needle)) {
+    } else if (startsAtWord(name, needle) || startsAtWord(earlier, needle)) {
       wordPrefix.push(item);
-    } else if (code.includes(needle) || name.includes(needle)) {
+    } else if (code.includes(needle) || name.includes(needle) || earlier.includes(needle)) {
       substring.push(item);
     }
   }
@@ -395,6 +397,36 @@ function startsAtWord(text, phrase) {
     index = text.indexOf(phrase, index + 1);
   }
   return false;
+}
+
+/** The phases the legends name, with the color group of each. */
+export const PHASE_LEGEND = Object.freeze([
+  Object.freeze({ tier: 'original', label: 'Phase 1' }),
+  Object.freeze({ tier: 'added', label: 'Phase 2' }),
+  Object.freeze({ tier: 'other', label: 'Phase 3' }),
+]);
+
+/**
+ * Name the color group of a species from its part of the ID guide.
+ * @param {*} part The species' part of the guide.
+ * @returns {string} 'original' for Part 1, 'added' for Part 2, 'other' for anything else.
+ */
+export function speciesTier(part) {
+  const text = String(part);
+  if (text === '1') {
+    return 'original';
+  }
+  return text === '2' ? 'added' : 'other';
+}
+
+/**
+ * Shorten a scientific name to the genus initial and the epithet.
+ * @param {string} name The name, such as "Aplysina cauliformis".
+ * @returns {string} Such as "A. cauliformis", or the name itself when it is not a binomial.
+ */
+export function abbreviatedName(name) {
+  const parts = binomialParts(name);
+  return parts ? `${parts.initial} ${parts.epithet}` : String(name);
 }
 
 /**
@@ -657,17 +689,26 @@ export function percentText(fraction) {
 }
 
 /**
- * Word the status badge of a video row.
- * @param {string} status "new", "in progress", or "done" from the catalog.
- * @param {number} sightings How many sightings the video has.
- * @returns {string} "new", or the status followed by the count, such as "in progress · 3".
+ * Word a video's progress for its row in the list.
+ * @param {*} sightings The labeled sightings.
+ * @param {*} review The points waiting for a species.
+ * @param {*} percent The whole percent watched, or null with no record.
+ * @returns {string} Such as "31 tagged · 5 review · 62%", or "new" with nothing to say.
  */
-export function statusLabel(status, sightings) {
-  if (status !== 'in progress' && status !== 'done') {
-    return 'new';
+export function videoProgress(sightings, review, percent) {
+  const tagged = isFiniteNumber(sightings) && sightings > 0 ? Math.floor(sightings) : 0;
+  const waiting = isFiniteNumber(review) && review > 0 ? Math.floor(review) : 0;
+  const parts = [];
+  if (tagged > 0 || waiting > 0) {
+    parts.push(`${tagged} tagged`);
   }
-  const count = isFiniteNumber(sightings) && sightings > 0 ? Math.floor(sightings) : 0;
-  return `${status} · ${count}`;
+  if (waiting > 0) {
+    parts.push(`${waiting} review`);
+  }
+  if (isFiniteNumber(percent)) {
+    parts.push(`${percent}%`);
+  }
+  return parts.join(' · ') || 'new';
 }
 
 /**
@@ -703,7 +744,7 @@ export function formatLabel(playable, converted) {
     return { text: 'conversion queued', kind: 'convert' };
   }
   return playable
-    ? { text: 'plays now', kind: 'plays' }
+    ? { text: '', kind: 'plays' }
     : { text: 'needs conversion', kind: 'convert' };
 }
 
@@ -914,7 +955,7 @@ export function unsavedSummary(items) {
   const [item] = items;
   const clock = formatClock(item.time);
   if (!item.code) {
-    return `The Later point at ${clock} not saved.`;
+    return `The review point at ${clock} not saved.`;
   }
   return `${`${item.code} ${item.name || ''}`.trim()} at ${clock} not saved.`;
 }
@@ -943,7 +984,7 @@ export function leaveBlocked(inFlight, unsaved) {
 export function sightingsCount(rows) {
   const later = rows.filter((row) => labelStatus(row) === 'unlabeled').length;
   const labeled = rows.length - later;
-  return later > 0 ? `${labeled} · ${later} later` : String(labeled);
+  return later > 0 ? `${labeled} · ${later} review` : String(labeled);
 }
 
 /**
@@ -959,7 +1000,7 @@ export function exportSummary(answer) {
   const left = Number(answer.unlabeled_left_out) || 0;
   const parts = [`Exported ${count} ${count === 1 ? 'sighting' : 'sightings'}.`];
   if (left > 0) {
-    parts.push(`${left} Later ${left === 1 ? 'point' : 'points'} left out.`);
+    parts.push(`${left} review ${left === 1 ? 'point' : 'points'} left out.`);
   }
   parts.push(`Folder: ${answer.path}`);
   return parts.join(' ');
@@ -990,7 +1031,7 @@ export function latestUnsaved(saves, key) {
  * @returns {string} Such as "Discarded the unsaved ACAU pick at 01:36".
  */
 export function discardedText(code, time) {
-  const what = code ? `${code} pick` : 'Later point';
+  const what = code ? `${code} pick` : 'review point';
   return `Discarded the unsaved ${what} at ${formatClock(time)}`;
 }
 

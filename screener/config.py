@@ -1,4 +1,4 @@
-"""Constants and folder locations shared by every Sponge Screener module.
+"""Constants and folder locations shared by every Sponge Lab module.
 
 Every tunable number in the app lives here under a name, so no module carries
 an unexplained literal.

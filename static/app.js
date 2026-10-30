@@ -1,5 +1,5 @@
 /**
- * Sponge Screener page logic.
+ * Sponge Lab page logic.
  *
  * The page has two keyboard modes. In screening mode the keys drive the video. A
  * click or a drag on the picture pauses the video, starts a mark, and opens the
@@ -55,7 +55,9 @@ import {
   sightingsCount,
   sortRowsByTime,
   splitVideoName,
-  statusLabel,
+  videoProgress,
+  abbreviatedName,
+  speciesTier,
   stepSpeed,
   stripDataUrl,
   swapPin,
@@ -72,7 +74,6 @@ import {
   placeWheel,
   rowLabel,
   seenCounts,
-  shortLabel,
   spaceAction,
   wheelScale,
 } from './wheel.js';
@@ -87,6 +88,8 @@ const ROOT_PREFIX = 'TCRMP_video_ondeck/';
 const MUTATION_HEADER = 'X-Screener';
 /** How often the page saves the stretches watched while a video plays. */
 const WATCH_SAVE_MS = 5000;
+/** Below this window width a docked guide would squeeze the video, so the guide floats and starts closed. */
+const GUIDE_DOCK_MIN_WIDTH = 1100;
 const JPEG_QUALITY = 0.95;
 const FRAME_STEP_SECONDS = 1 / 30;
 const POLL_MS = 2000;
@@ -130,7 +133,6 @@ const WHEEL_MARGIN_PX = 12;
 /** A flash label stays on the picture this long after a pick, fading over the last part. */
 const FLASH_MS = 1500;
 const FLASH_FADE_MS = 400;
-const FLASH_NAME_CHARS = 12;
 const FLASH_RING = { width: 2, radius: 9 };
 /** File extensions Chrome plays directly, for a video opened from the To label list. */
 const PLAYABLE_EXTENSIONS = Object.freeze(['mp4', 'm4v', 'mov']);
@@ -140,7 +142,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 const STORAGE = {
   position: 'screener.position.',
   prefix: 'screener.prefix',
-  grid: 'screener.grid',
+  grid: 'screener.gridShown',
   deck: 'screener.deck',
   guideDock: 'screener.guideDock',
   speed: 'screener.speed.v2',
@@ -159,7 +161,6 @@ const state = {
   key: null,
   name: null,
   source: null,
-  videoStatus: 'new',
   pending: null,
   rows: [],
   tracks: {},
@@ -204,6 +205,7 @@ const runtime = {
   watch: createWatchTracker(),
   watchSavedAt: 0,
   watchWarned: false,
+  guideClosedForRoom: false,
   loadToken: 0,
   queryEditedAt: -Infinity,
   deleteArmedAt: null,
@@ -272,6 +274,7 @@ const dom = {
   coverageGrid: byId('coverage-grid'),
   guideToggle: byId('guide-toggle'),
   guide: byId('guide'),
+  guideNotice: byId('guide-notice'),
   guideClose: byId('guide-close'),
   guideDock: byId('guide-dock'),
   guideSpecies: byId('guide-species'),
@@ -306,8 +309,6 @@ const dom = {
   speed: byId('speed'),
   grid: byId('grid'),
   deckToggle: byId('deck-toggle'),
-  done: byId('done'),
-  doneLabel: byId('done-label'),
   next: byId('next'),
   fullscreen: byId('fullscreen'),
   fullscreenIcon: byId('fullscreen-icon'),
@@ -679,27 +680,19 @@ function videoNode(video) {
 
   const format = formatLabel(Boolean(video.playable), video.converted);
   const status = video.status === 'in progress' || video.status === 'done' ? video.status : 'new';
-  const later = Number(video.unlabeled) || 0;
   const meta = el('span', { class: 'video-meta' }, [
     el('span', {
-      class: 'badge',
-      text: statusLabel(status, video.sightings),
-      title: 'new: nobody has opened this video. in progress: it was opened, and the number counts its sightings. done: you marked it fully screened.',
-      data: { status },
+      class: 'video-progress',
+      text: videoProgress(video.sightings, video.unlabeled, video.watched_percent),
+      title: 'Tagged, to review, and percent watched.',
     }),
-    later > 0 ? el('span', {
-      class: 'video-later',
-      text: `· ${later} later`,
-      title: 'Points in this video that you saved for later. You give each one a species from the To label list.',
-    }) : '',
-    el('span', {
+    format.text ? el('span', {
       class: 'format',
       text: format.text,
-      title: 'plays now: Chrome plays this format directly. needs conversion: the server converts the file first, which takes a few minutes.',
+      title: 'The app converts this file before it plays.',
       data: { format: format.kind },
-    }),
+    }) : '',
   ]);
-
   const size = formatBytes(video.size);
   const open = el('button', {
     class: 'video-open',
@@ -920,24 +913,12 @@ function applySettings(data) {
   updateMatches();
 }
 
-/** The color group of each part of the ID guide; other species and empty keys stay gray. */
-const PIN_TIERS = Object.freeze({ 1: 'original', 2: 'added' });
-
 /** What each color group means, for the key's tooltip and screen readers. */
 const PIN_TIER_WORDS = Object.freeze({
-  original: 'Green: one of the original 4 target species, ID guide Part 1.',
-  added: 'Pink: one of the 4 target species added in ID guide Part 2.',
-  other: 'Gray: not one of the 8 target species.',
+  original: 'Green: Phase 1.',
+  added: 'Pink: Phase 2.',
+  other: 'Gray: Phase 3.',
 });
-
-/**
- * Name the color group of a pinned species from its part of the ID guide.
- * @param {?object} species The species on the key, or null for an empty key.
- * @returns {string} 'original' for Part 1, 'added' for Part 2, 'other' for anything else.
- */
-function pinTier(species) {
-  return (species && PIN_TIERS[species.part]) || 'other';
-}
 
 /** Draw the ten pinned-species keycaps. */
 function renderPins() {
@@ -945,7 +926,7 @@ function renderPins() {
     const code = state.pins[slot] || '';
     const species = speciesByCode(code);
     const name = species ? species.name : '';
-    const tier = pinTier(species);
+    const tier = speciesTier(species && species.part);
     const parts = binomialParts(name);
     const nameNodes = parts
       ? [el('span', { class: 'pin-genus', text: `${parts.initial} ` }), parts.epithet]
@@ -1116,6 +1097,9 @@ function renderMatches() {
       el('span', { class: 'match-code', text: code }),
       el('span', { class: 'match-name', text: species ? species.name : '' }),
     ];
+    if (species && species.name_changes && species.name_changes.length > 0) {
+      children.push(el('span', { class: 'match-was', text: `was ${abbreviatedName(species.name_changes[0].name)}` }));
+    }
     if (pinOf.has(code)) {
       children.push(el('kbd', { text: pinOf.get(code), title: `This species sits on key ${pinOf.get(code)}.` }));
     }
@@ -1242,12 +1226,10 @@ async function openVideo(entry, jump = null) {
   state.tracks = {};
   state.trackPending = [];
   state.conversion = null;
-  state.videoStatus = entry.status === 'done' ? 'done' : 'in progress';
   dom.currentVideo.textContent = entry.name;
   dom.currentVideo.title = `The video that is open now: ${entry.key}`;
   renderBrowser();
   renderSightings();
-  renderDone();
   renderMarkBar();
 
   if (entry.converted === 'done') {
@@ -1267,7 +1249,6 @@ async function openVideo(entry, jump = null) {
     return;
   }
   if (opened.status === 'fulfilled' && opened.value.video) {
-    state.videoStatus = opened.value.video.Status === 'done' ? 'done' : 'in progress';
     const row = videoEntry(entry.key);
     if (row && row.status === 'new') {
       row.status = 'in progress';
@@ -1284,7 +1265,6 @@ async function openVideo(entry, jump = null) {
   }
   renderBrowser();
   renderSightings();
-  renderDone();
   drawOverlay();
 }
 
@@ -1636,7 +1616,7 @@ function onTimeUpdate() {
 
 /** Tell the annotator what to do when the video reaches its end. */
 function onEnded() {
-  toast('End of the video. Press D when it is fully screened, then N for the next one.', 'info', ERROR_TOAST_MS);
+  toast('End of the video. Press N for the next one.', 'info');
 }
 
 /** Play when paused, pause when playing. At the end of the video, play starts over from the top. */
@@ -1714,7 +1694,7 @@ function setDeck(shown) {
  */
 function setGuideDock(docked) {
   state.guideDocked = docked;
-  document.body.dataset.guideDock = docked ? 'docked' : 'floating';
+  applyGuideDock();
   dom.guideDock.setAttribute('aria-pressed', String(docked));
   dom.guideDock.setAttribute('aria-label', docked ? 'Let the guide float over the page' : 'Dock the guide beside the video');
   storageSet(STORAGE.guideDock, docked ? '1' : '0');
@@ -1764,96 +1744,6 @@ function renderScrubMarks() {
     }
   }
   dom.scrubMarks.replaceChildren(...nodes);
-}
-
-/** Draw the done button from the status of the open video. */
-function renderDone() {
-  const done = state.videoStatus === 'done';
-  dom.done.disabled = !state.key;
-  dom.done.setAttribute('aria-pressed', String(done));
-  dom.doneLabel.textContent = done ? 'Done' : 'Mark done';
-}
-
-/**
- * Mark the open video as fully screened, or reopen it.
- * @returns {Promise<void>} Settles after the server stored or refused the change.
- */
-async function toggleDone() {
-  if (!state.key) {
-    toast('Open a video first.', 'info');
-    return;
-  }
-  const key = state.key;
-  const done = state.videoStatus !== 'done';
-  const name = state.name;
-  const later = state.rows.filter((row) => labelStatus(row) === 'unlabeled').length;
-  if (done && later > 0) {
-    // The server refuses too; the page answers first so the refusal needs no round trip.
-    toast(`The done status was not saved. done: this video has ${later} unlabeled point(s). Label or delete them first, because a done video tells OnDeck that missing pinned species are absent.`, 'error');
-    return;
-  }
-  if (done) {
-    const watched = await saveWatched(true);
-    if (key !== state.key) {
-      return;
-    }
-    const warning = doneWarning(watched);
-    if (warning) {
-      // The cards sit above the toasts, and this toast holds a button.
-      toggleCoverage(false);
-      toggleHelp(false);
-      toast(warning, 'info', ERROR_TOAST_MS, {
-        label: 'Mark done anyway',
-        title: `You mark ${name} done even though parts of it were not watched. Its zero counts then read as absent only if every second was watched.`,
-        run: (event) => {
-          event.currentTarget.closest('.toast').remove();
-          saveDone(key, true);
-        },
-      });
-      return;
-    }
-  }
-  await saveDone(key, done);
-}
-
-/**
- * Word the warning for a video that is not fully watched.
- * @param {?object} watched The watched summary, or null when it could not be read.
- * @returns {string} The warning, or an empty string when the whole video was watched.
- */
-function doneWarning(watched) {
-  if (!watched) {
-    return 'The app could not read the watched time for this video.';
-  }
-  if (watched.percent === null) {
-    return 'This video has no watched time yet.';
-  }
-  return watched.gaps.length > 0 ? gapSentence(watched.gaps) : '';
-}
-
-/**
- * Store a video's done status and update the page.
- * @param {string} key The video's key.
- * @param {boolean} done True marks it done, false reopens it.
- * @returns {Promise<void>} Settles after the server stored or refused the change.
- */
-async function saveDone(key, done) {
-  try {
-    const answer = await request('POST', '/api/videos/done', { key, done });
-    const status = answer.video && answer.video.Status === 'done' ? 'done' : 'in progress';
-    const entry = videoEntry(key);
-    if (entry) {
-      entry.status = status;
-    }
-    if (key === state.key) {
-      state.videoStatus = status;
-    }
-    toast(status === 'done' ? 'Marked done. Press N for the next video.' : 'Reopened. The video is in progress again.');
-  } catch (error) {
-    toast(`The done status was not saved. ${endSentence(error.message)}`, 'error');
-  }
-  renderDone();
-  renderBrowser();
 }
 
 /** Open the video that follows the open one in the list on screen. */
@@ -2169,7 +2059,7 @@ function drawOverlay() {
       tag = drawTag(ctx, rect, '?', shape, { fill: LATER_COLOR, ink: LATER_INK, outline: '#ffffff' });
     } else {
       shape = drawMark(ctx, rect, saved, { color: '#2a2a2a', width: 1.5, radius: 8 });
-      tag = drawTag(ctx, rect, `${saved.code} saved`, shape, {
+      tag = drawTag(ctx, rect, speciesTag(saved.code), shape, {
         fill: 'rgba(20, 20, 20, 0.82)', ink: '#ffffff', outline: 'rgba(255, 255, 255, 0.7)',
       });
     }
@@ -2226,6 +2116,16 @@ function drawFlashes(ctx, rect) {
 }
 
 /**
+ * Word the label of a species on the picture.
+ * @param {string} code The species code.
+ * @returns {string} Such as "A. cauliformis", or the code for a species not on the list.
+ */
+function speciesTag(code) {
+  const species = speciesByCode(code);
+  return species ? abbreviatedName(species.name) : code;
+}
+
+/**
  * Add a flash label for a pick and keep the overlay redrawing while it fades. The flash
  * stays in the list while its save is unsettled, however long the server takes.
  * @param {string} key The S3 key of the video.
@@ -2236,13 +2136,12 @@ function drawFlashes(ctx, rect) {
  *   until: number, failed: boolean, pending: boolean}} The flash; the save settles it.
  */
 function addFlash(key, time, mark, code) {
-  const species = code ? speciesByCode(code) : null;
   const flash = {
     key,
     time,
     point: mark.point,
     box: mark.box,
-    text: code ? `${code} ${shortLabel(species ? species.name : '', FLASH_NAME_CHARS)}`.trim() : 'later',
+    text: code ? speciesTag(code) : 'review',
     later: !code,
     until: performance.now() + FLASH_MS,
     failed: false,
@@ -2298,9 +2197,9 @@ function renderMarkBar() {
   }
   if (pending) {
     const where = `${QUADRANT_PHRASES[pending.quadrant]} · ${formatClock(pending.time)} · ${pending.box ? 'box' : 'point'}`;
-    let action = 'pick a species in the wheel, or Space for later';
+    let action = 'pick a species in the wheel, or Space for review';
     if (pending.mode === 'edit' && pending.status === 'unlabeled') {
-      action = `${pending.rowId} Later: pick a species, or Space to keep it for later`;
+      action = `${pending.rowId} review: pick a species, or Space to keep it`;
     } else if (pending.mode === 'edit') {
       action = `${pending.rowId} ${pending.code}: pick a new species, or Space to unlabel it`;
     }
@@ -2495,7 +2394,7 @@ function openEdit(row) {
  */
 function hubLabelOf(pending) {
   if (pending.mode === 'new') {
-    return 'Later';
+    return 'Review';
   }
   return pending.status === 'unlabeled' ? 'Keep' : 'Unlabel';
 }
@@ -2540,6 +2439,15 @@ function openWheel() {
     scale: place.scale,
     markPx: place.markPx,
   });
+}
+
+/** Center the messages over the video, so a docked guide never covers them or their buttons. */
+function placeToasts() {
+  const stage = dom.stage.getBoundingClientRect();
+  if (stage.width > 0) {
+    dom.toasts.style.left = `${stage.left + stage.width / 2}px`;
+    dom.toasts.style.width = `${Math.min(560, Math.max(0, stage.width - 16))}px`;
+  }
 }
 
 /** Put an open wheel back on its mark after the window, the stage, or full screen changed size. */
@@ -2927,7 +2835,7 @@ function onSaved(save, answer) {
   refreshTally();
   refreshToLabel();
   drawOverlay();
-  toast(later ? `Saved ${row.ID} for later` : `Saved ${row.ID} ${row.SpeciesCode}`);
+  toast(later ? `${row.ID} saved for review` : `Saved ${row.ID} ${row.SpeciesCode}`);
   applyReopened(answer, save.key);
 }
 
@@ -3014,7 +2922,7 @@ async function relabelPending(pending, code, stay) {
       throw new ApiError(`row: the server answered without ${id}. Reload the page before you change it again.`, 0);
     }
     applyRelabel(answer.row, pending.status);
-    toast(code ? `${id} is now ${code}` : `${id} waits in the To label list`);
+    toast(code ? `${id} is now ${code}` : `${id} waits in the Review list`);
     applyReopened(answer, pending.key);
   } catch (error) {
     toast(`${id} was not changed. ${endSentence(error.message)}`, 'error');
@@ -3072,10 +2980,6 @@ async function refreshVideoStatus(key) {
   if (entry) {
     entry.status = status;
   }
-  if (key === state.key) {
-    state.videoStatus = status;
-  }
-  renderDone();
   renderBrowser();
 }
 
@@ -3094,12 +2998,7 @@ function applyReopened(answer, key) {
   if (entry) {
     entry.status = 'in progress';
   }
-  if (key === state.key) {
-    state.videoStatus = 'in progress';
-  }
-  renderDone();
   renderBrowser();
-  toast('This video is back in progress because it now has a point to label.', 'info');
 }
 
 // ------------------------------------------------------- sightings and tally
@@ -3190,12 +3089,12 @@ function sightingNode(row) {
     class: 'sighting-jump',
     title: title.trim(),
     attrs: { type: 'button' },
-    data: { id: row.ID },
+    data: { id: row.ID, code: row.SpeciesCode || '' },
   }, [
     cropThumb(row),
     el('span', { class: 'sighting-text' }, [
       el('span', { class: 'sighting-line' }, [
-        el('span', { class: 'sighting-code', text: status === 'unlabeled' ? 'Later' : row.SpeciesCode }),
+        el('span', { class: 'sighting-code', text: status === 'unlabeled' ? 'Review' : row.SpeciesCode }),
         el('span', { class: 'sighting-time', text: clock }),
       ]),
       el('span', { class: 'sighting-sub', text: `${row.ID} · ${row.Notes || ''}` }),
@@ -3288,7 +3187,7 @@ async function deleteSighting(id, doneText = '') {
     }
     const later = labelStatus(gone) === 'unlabeled';
     adjustVideoEntry(key, later ? 'unlabeled' : 'sightings', -1);
-    toast(doneText || (later ? `Removed ${id}, a point saved for later` : `Removed ${id} ${gone.SpeciesCode || ''}`.trim()));
+    toast(doneText || (later ? `Removed ${id}, a review point` : `Removed ${id} ${gone.SpeciesCode || ''}`.trim()));
   } catch (error) {
     toast(`${id} was not removed. ${endSentence(error.message)}`, 'error');
   }
@@ -3402,7 +3301,7 @@ function renderTally() {
   dom.tallyEmpty.textContent = state.tallyError || '';
   const sightings = state.tallyTotal === 1 ? '1 sighting' : `${state.tallyTotal} sightings`;
   const points = state.tallyUnlabeled === 1 ? '1 point' : `${state.tallyUnlabeled} points`;
-  dom.tallyTotal.textContent = `${sightings} across all videos. ${points} to label.`;
+  dom.tallyTotal.textContent = `${sightings} across all videos. ${points} to review.`;
   const rows = mergeTally(state.tally, state.pins, state.species);
   const nodes = [];
   let dividerPlaced = false;
@@ -3414,6 +3313,8 @@ function renderTally() {
     }
     dividerPlaced = dividerPlaced || row.pin === null;
     const under = row.sightings < state.tallyTarget;
+    const known = speciesByCode(row.code);
+    row.part = known ? known.part : '';
     const pinBox = el('span', {
       class: row.pin ? 'tally-pin' : 'tally-pin tally-pin-none',
       text: row.pin || '',
@@ -3421,7 +3322,7 @@ function renderTally() {
     });
     nodes.push(el('tr', {
       title: `${row.name}: ${row.sightings} sightings in ${row.videos} videos. ${under ? `It needs ${state.tallyTarget - row.sightings} more to reach the target.` : 'It reached the target.'}`,
-      data: { code: row.code, under: under ? '1' : '0', pinned: row.pin ? '1' : '0' },
+      data: { code: row.code, under: under ? '1' : '0', pinned: row.pin ? '1' : '0', tier: speciesTier(row.part) },
     }, [
       el('td', {}, [el('span', { class: 'tally-code' }, [pinBox, row.code])]),
       el('td', { class: 'num tally-seen', text: under ? `${row.sightings}/${state.tallyTarget}` : String(row.sightings) }),
@@ -3448,7 +3349,7 @@ async function refreshToLabel() {
     const answer = await request('GET', '/api/observations?status=unlabeled');
     rows = Array.isArray(answer.rows) ? answer.rows : [];
   } catch (error) {
-    problem = `The To label list did not load. ${endSentence(error.message)}`;
+    problem = `The Review list did not load. ${endSentence(error.message)}`;
   }
   if (token !== runtime.toLabelToken) {
     return;
@@ -3464,7 +3365,7 @@ async function refreshToLabel() {
 function renderToLabel() {
   dom.toLabelCount.textContent = String(state.toLabel.length);
   dom.toLabel.replaceChildren(...state.toLabel.slice().reverse().map(toLabelNode));
-  dom.toLabelEmpty.textContent = state.toLabelError || 'No points waiting for a label.';
+  dom.toLabelEmpty.textContent = state.toLabelError || 'Nothing to review.';
   dom.toLabelEmpty.hidden = state.toLabel.length > 0 && !state.toLabelError;
 }
 
@@ -3643,6 +3544,42 @@ function showGuide(code, open = true) {
   }
 }
 
+/** Dock or float the guide from the annotator's choice and the room in the window. */
+function applyGuideDock() {
+  const wasDocked = document.body.dataset.guideDock === 'docked';
+  document.body.dataset.guideDock = state.guideDocked && roomForGuide() ? 'docked' : 'floating';
+  // A window that shrank has no room for the guide, and a floating one would cover the video.
+  if (wasDocked && !roomForGuide() && !dom.guide.hidden) {
+    runtime.guideClosedForRoom = true;
+    toggleGuide(false);
+  } else if (runtime.guideClosedForRoom && roomForGuide()) {
+    runtime.guideClosedForRoom = false;
+    toggleGuide(true);
+  }
+}
+
+/**
+ * Tell whether the window has room for the guide beside the video.
+ * @returns {boolean} True when the window is wide enough.
+ */
+function roomForGuide() {
+  return window.innerWidth >= GUIDE_DOCK_MIN_WIDTH;
+}
+
+/**
+ * Show a species in the guide when the pointer rests on its name, opening the guide if needed.
+ * @param {MouseEvent} event The mouseover in a list that names species.
+ */
+function onSpeciesHover(event) {
+  const owner = event.target.closest('[data-code]');
+  const code = owner ? owner.dataset.code : '';
+  if (!code || (code === guide.code && !dom.guide.hidden) || (dom.guide.hidden && !roomForGuide())) {
+    return;
+  }
+  window.clearTimeout(runtime.guideFollowTimer);
+  runtime.guideFollowTimer = window.setTimeout(() => showGuide(code), GUIDE_FOLLOW_MS);
+}
+
 /**
  * Show the species the wheel lights in the guide, when the guide is open. The guide never
  * opens by itself; it follows the pointer or Tab only while it is already on screen.
@@ -3701,6 +3638,12 @@ function renderGuide() {
   guide.code = item.code;
   dom.guideSpecies.value = item.code;
   dom.guideText.textContent = item.description || 'No description in the ID guide yet.';
+  const known = speciesByCode(item.code);
+  const changes = known && known.name_changes ? known.name_changes : [];
+  dom.guideNotice.hidden = changes.length === 0;
+  dom.guideNotice.textContent = changes
+    .map((change) => `Name changed: was ${change.name} (${change.source}, ${change.changed}).`)
+    .join(' ');
   dom.guideCount.textContent = item.images.length ? `${item.images.length} photos` : 'no photos';
   if (!item.images.length) {
     dom.guideImages.append(el('p', { class: 'guide-empty', text: `No reference photos for ${item.name} in the species viewer.` }));
@@ -3800,7 +3743,7 @@ function coverageRow(page, video) {
   }
   const cells = page.species.map((species) => {
     const earlier = video.reference ? video.reference[species.code] : null;
-    const cell = targetCell(video.counts[species.code], earlier, video.watched, video.status === 'done');
+    const cell = targetCell(video.counts[species.code], earlier, video.watched, video.unlabeled);
     return el('td', {
       class: 'coverage-cell',
       title: `${species.name}. ${cell.title}`,
@@ -3820,8 +3763,7 @@ function coverageRow(page, video) {
       title: video.watched.percent === null ? 'No watched time is saved for this video. Viewing from before this feature was not recorded.' : gaps,
       data: { complete: String(video.watched.percent === 100) },
     }),
-    el('td', { class: 'coverage-number', text: String(video.unlabeled), title: 'Points in this video that still need a species.' }),
-    el('td', { class: 'coverage-status', text: video.status, title: 'The screening status of this video.' }),
+    el('td', { class: 'coverage-number', text: String(video.unlabeled), title: 'Points in this video to review.' }),
   ]);
 }
 
@@ -3837,9 +3779,9 @@ function renderCoverage(page) {
   const headers = page.species.map((species) => el('th', {
     class: 'coverage-species',
     text: species.code,
-    title: `${species.name}. ${PIN_TIER_WORDS[pinTier(species)]}`,
+    title: `${species.name}. ${PIN_TIER_WORDS[speciesTier(species.part)]}`,
     attrs: { scope: 'col' },
-    data: { tier: pinTier(species) },
+    data: { tier: speciesTier(species.part) },
   }));
   const totals = page.species.map((species) => {
     const count = page.videos.reduce((sum, video) => sum + video.counts[species.code], 0);
@@ -3851,27 +3793,25 @@ function renderCoverage(page) {
       el('span', { class: 'coverage-reference', text: earlier }),
     ]);
   });
-  const finished = page.videos.filter((video) => video.status === 'done').length;
+  const finished = page.videos.filter((video) => video.watched.percent === 100).length;
   const table = el('table', { class: 'coverage-table' }, [
     el('thead', {}, [el('tr', {}, [
       el('th', { text: 'Video', attrs: { scope: 'col' } }),
       ...headers,
       el('th', { text: 'Watched', attrs: { scope: 'col' } }),
-      el('th', { text: 'To label', attrs: { scope: 'col' } }),
-      el('th', { text: 'Status', attrs: { scope: 'col' } }),
+      el('th', { text: 'Review', attrs: { scope: 'col' } }),
     ])]),
     el('tbody', {}, page.videos.map((video) => coverageRow(page, video))),
     el('tfoot', {}, [el('tr', {}, [
       el('th', { text: 'All', attrs: { scope: 'row' } }),
       ...totals,
-      el('td', {}),
+      el('td', { class: 'coverage-watched', text: `${finished}/${page.videos.length}`, title: 'Videos fully watched.' }),
       el('td', { class: 'coverage-number', text: String(page.videos.reduce((sum, video) => sum + video.unlabeled, 0)) }),
-      el('td', { class: 'coverage-status', text: `${finished} of ${page.videos.length} done` }),
     ])]),
   ]);
   const legend = page.has_reference
-    ? 'J is the January count. Amber: January logged it and nothing is tagged yet. A cell reads none only after the whole video is watched and marked done.'
-    : 'A cell reads none only after the whole video is watched and marked done.';
+    ? 'J: January count. Amber: January logged it, nothing tagged. none: fully watched, none tagged.'
+    : 'none: fully watched, none tagged.';
   dom.coverageGrid.replaceChildren(table, el('p', { class: 'help-note', text: legend }));
 }
 
@@ -3958,14 +3898,15 @@ function onKeyDown(event) {
     event.preventDefault();
     return;
   }
-  if (key === 'Escape' && !dom.guide.hidden) {
-    toggleGuide(false);
-    event.preventDefault();
-    return;
-  }
   if (key === 'Escape' && !dom.coverage.hidden) {
     toggleCoverage(false);
     return true;
+  }
+  // A docked guide stays put, so Escape still cancels the mark on screen.
+  if (key === 'Escape' && !dom.guide.hidden && document.body.dataset.guideDock !== 'docked') {
+    toggleGuide(false);
+    event.preventDefault();
+    return;
   }
   if (key === 'Escape' && !dom.help.hidden) {
     toggleHelp(false);
@@ -4257,10 +4198,6 @@ function onScreeningKey(event, key) {
     undoLastSighting();
     return true;
   }
-  if (letter === 'd') {
-    toggleDone();
-    return true;
-  }
   if (letter === 'n') {
     openNextVideo();
     return true;
@@ -4310,6 +4247,11 @@ function wireEvents() {
   window.addEventListener('blur', abandonDrag);
   window.addEventListener('pagehide', savePosition);
   window.addEventListener('pagehide', saveWatchedOnExit);
+  new ResizeObserver(() => {
+    placeToasts();
+    relayoutWheel();
+  }).observe(dom.stage);
+  window.addEventListener('resize', applyGuideDock);
   window.addEventListener('beforeunload', onBeforeUnload);
 
   dom.breadcrumb.addEventListener('click', onFolderClick);
@@ -4380,7 +4322,6 @@ function wireEvents() {
   dom.slower.addEventListener('click', () => setSpeed(stepSpeed(state.speed, -1)));
   dom.faster.addEventListener('click', () => setSpeed(stepSpeed(state.speed, 1)));
   dom.grid.addEventListener('click', () => setGrid(!state.grid));
-  dom.done.addEventListener('click', toggleDone);
   dom.next.addEventListener('click', openNextVideo);
   dom.fullscreen.addEventListener('click', toggleFullscreen);
   dom.deckToggle.addEventListener('click', () => setDeck(!state.deckShown));
@@ -4409,6 +4350,9 @@ function wireEvents() {
   dom.toLabel.addEventListener('click', onToLabelClick);
   dom.annotator.addEventListener('change', saveAnnotator);
   dom.exportButton.addEventListener('click', exportPackage);
+  for (const list of [dom.pins, dom.tallyRows, dom.matches, dom.sightings]) {
+    list.addEventListener('mouseover', onSpeciesHover);
+  }
   dom.coverageToggle.addEventListener('click', () => toggleCoverage());
   dom.coverageClose.addEventListener('click', () => toggleCoverage(false));
   dom.helpToggle.addEventListener('click', () => toggleHelp());
@@ -4432,7 +4376,7 @@ function keepFilterFocus(event) {
 
 /** Read the remembered grid and speed choices from localStorage. */
 function restorePreferences() {
-  state.grid = storageGet(STORAGE.grid) !== '0';
+  state.grid = storageGet(STORAGE.grid) === '1';
   dom.grid.setAttribute('aria-pressed', String(state.grid));
   const speed = Number(storageGet(STORAGE.speed));
   setSpeed(SPEEDS.includes(speed) ? speed : DEFAULT_SPEED);
@@ -4454,7 +4398,6 @@ async function start() {
   renderMarkBar();
   renderSightings();
   renderToLabel();
-  renderDone();
   renderTransport();
 
   const remembered = storageGet(STORAGE.prefix);
@@ -4467,6 +4410,9 @@ async function start() {
       state.catalogError && first !== ROOT_PREFIX ? loadCatalog(ROOT_PREFIX) : undefined
     )),
   ]);
+  if (roomForGuide()) {
+    toggleGuide(true);
+  }
 }
 
 const scrubber = createScrubber(dom.video);

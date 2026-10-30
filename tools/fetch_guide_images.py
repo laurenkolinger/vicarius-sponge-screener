@@ -92,9 +92,11 @@ def find_entry(name: str, by_name: dict) -> dict:
     """
     matches = []
     for candidate in NAME_ALIASES.get(name, [name]):
-        entry = by_name.get(candidate.strip().lower())
-        if entry and entry not in matches:
-            matches.append(entry)
+        wanted = candidate.strip().lower()
+        # The viewer files morphotypes and lettered forms under longer names of the same species.
+        for viewer_name, entry in by_name.items():
+            if (viewer_name == wanted or viewer_name.startswith(f"{wanted} ")) and entry not in matches:
+                matches.append(entry)
     if not matches:
         return {}
     images = list(dict.fromkeys(image for entry in matches for image in entry.get("images", [])))

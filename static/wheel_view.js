@@ -9,7 +9,7 @@
  * handlers that app.js passes in. Species names reach the DOM through textContent only.
  */
 
-import { PIN_KEYS } from './geometry.js';
+import { PHASE_LEGEND, PIN_KEYS, speciesTier } from './geometry.js';
 import {
   cycleHighlight,
   WHEEL,
@@ -20,7 +20,7 @@ import {
   litTarget,
   outerWindow,
   restingText,
-  shortLabel,
+  sliceName,
   sliceCenter,
   spinDelta,
   spinOffset,
@@ -50,11 +50,11 @@ const OUTER_NAME_DY = 9;
 /** The hub label baseline, just under the ring of the mark. */
 const HUB_LABEL_Y = 29;
 /** The longest epithet on an inner slice: eight pins leave room for eleven letters, more pins for eight. */
-const INNER_NAME_CHARS = 11;
-const INNER_NAME_CHARS_CROWDED = 8;
+const INNER_NAME_CHARS = 14;
+const INNER_NAME_CHARS_CROWDED = 11;
 const CROWDED_INNER_COUNT = 8;
 /** The longest epithet on an outer slot. */
-const OUTER_NAME_CHARS = 9;
+const OUTER_NAME_CHARS = 12;
 /** The seam tick runs from just inside the outer edge to just outside it. */
 const SEAM_INNER = WHEEL.outerRadius - 6;
 const SEAM_OUTER = WHEEL.outerRadius + 9;
@@ -77,8 +77,8 @@ const MOUSE_PRIMARY = 0;
 /** One full turn in degrees. */
 const TURN_DEG = 360;
 
-/** The hub actions: Later for a new mark, Unlabel for a labeled row, Keep for a Later point. */
-const HUB_LABELS = Object.freeze(['Later', 'Unlabel', 'Keep']);
+/** The hub actions: Review for a new mark, Unlabel for a labeled row, Keep for a review point. */
+const HUB_LABELS = Object.freeze(['Review', 'Unlabel', 'Keep']);
 
 /**
  * Build an SVG element.
@@ -231,7 +231,17 @@ export function createWheel(layer, handlers) {
   const hubLabel = svg('text', { class: 'wheel-hub-label', x: 0, y: HUB_LABEL_Y });
   hub.append(hubHit, hubRing, hubLabel);
   canvas.append(outerRing, seam, innerRing, hub, leader);
-  root.append(readout, announcer, canvas);
+  const legend = document.createElement('div');
+  legend.className = 'phase-legend wheel-legend';
+  for (const { tier, label } of PHASE_LEGEND) {
+    const chip = document.createElement('span');
+    chip.className = 'phase-chip';
+    chip.dataset.tier = tier;
+    chip.textContent = label;
+    legend.append(chip);
+  }
+  // The corner of the wheel's square lies outside the circle, so the legend covers no slice.
+  root.append(readout, announcer, canvas, legend);
   layer.append(root);
 
   /** Everything the open wheel shows. */
@@ -239,10 +249,11 @@ export function createWheel(layer, handlers) {
     open: false,
     mode: 'new',
     rowId: null,
-    hubLabel: 'Later',
+    hubLabel: 'Review',
     current: null,
     species: [],
     names: new Map(),
+    parts: new Map(),
     inner: [],
     pinOf: new Map(),
     query: '',
@@ -357,6 +368,7 @@ export function createWheel(layer, handlers) {
       'aria-label': `${item.code} ${name}`.trim(),
       'data-ring': ring,
       'data-code': item.code,
+      'data-tier': speciesTier(view.parts.get(item.code)),
       'data-lit': String(Boolean(target) && target.code === item.code),
       'data-current': String(item.code === view.current),
     });
@@ -368,11 +380,11 @@ export function createWheel(layer, handlers) {
       ? [
         ['wheel-key', item.slot, INNER_KEY_DY],
         ['wheel-code wheel-code-inner', item.code, INNER_CODE_DY],
-        ['wheel-name wheel-name-inner', shortLabel(name, count > CROWDED_INNER_COUNT ? INNER_NAME_CHARS_CROWDED : INNER_NAME_CHARS), INNER_NAME_DY],
+        ['wheel-name wheel-name-inner', sliceName(name, count > CROWDED_INNER_COUNT ? INNER_NAME_CHARS_CROWDED : INNER_NAME_CHARS), INNER_NAME_DY],
       ]
       : [
         ['wheel-code wheel-code-outer', item.code, OUTER_CODE_DY],
-        ['wheel-name wheel-name-outer', shortLabel(name, OUTER_NAME_CHARS), OUTER_NAME_DY],
+        ['wheel-name wheel-name-outer', sliceName(name, OUTER_NAME_CHARS), OUTER_NAME_DY],
       ];
     group.append(wedge);
     const seen = Number(view.seen.get(item.code)) || 0;
@@ -688,7 +700,7 @@ export function createWheel(layer, handlers) {
         throw new TypeError(`wheel.open: mode must be "new" or "edit", got ${JSON.stringify(options.mode)}`);
       }
       if (!HUB_LABELS.includes(options.hubLabel)) {
-        throw new TypeError(`wheel.open: hubLabel must be Later, Unlabel, or Keep, got ${JSON.stringify(options.hubLabel)}`);
+        throw new TypeError(`wheel.open: hubLabel must be Review, Unlabel, or Keep, got ${JSON.stringify(options.hubLabel)}`);
       }
       window.cancelAnimationFrame(view.spinFrame);
       outerRing.removeAttribute('transform');
@@ -698,6 +710,7 @@ export function createWheel(layer, handlers) {
       view.current = options.current || null;
       view.species = options.species;
       view.names = new Map(options.species.map((item) => [item.code, item.name]));
+      view.parts = new Map(options.species.map((item) => [item.code, item.part]));
       view.inner = innerItems(options.pins, PIN_KEYS);
       view.pinOf = new Map(view.inner.map((item) => [item.code, item.slot]));
       view.query = '';

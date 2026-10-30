@@ -672,7 +672,7 @@ class ObservationStore:
                     raise StoreError(
                         f"{self._lock_path}: another writer has kept the write lock for "
                         f"{LOCK_WAIT_SECONDS:g} seconds, so nothing was written. Close any other "
-                        "Sponge Screener that uses this data folder, then try again."
+                        "Sponge Lab that uses this data folder, then try again."
                     ) from error
                 time.sleep(LOCK_POLL_SECONDS)
             except OSError as error:

@@ -123,11 +123,11 @@ export function gapSentence(gaps) {
  * @param {number} count The labeled sightings of the species in the video.
  * @param {?number} reference The January count, or null without a reference file.
  * @param {{percent: ?number}} watched The video's watched summary.
- * @param {boolean} done True when the video is marked done.
+ * @param {number} review The points in the video still waiting for a species.
  * @returns {{state: string, text: string, reference: string, title: string}} The cell. The
  *   state is tagged, missing, absent, or open.
  */
-export function targetCell(count, reference, watched, done) {
+export function targetCell(count, reference, watched, review) {
   const referenceText = reference === null ? '' : `J${reference}`;
   const january = reference === null ? '' : ` January logged ${reference}.`;
   if (count > 0) {
@@ -136,10 +136,10 @@ export function targetCell(count, reference, watched, done) {
   if (reference > 0) {
     return { state: 'missing', text: '0', reference: referenceText, title: `Nothing is tagged yet, and January logged ${reference} here. Check this video for this species.` };
   }
-  if (done && watched.percent === 100) {
-    return { state: 'absent', text: 'none', reference: referenceText, title: `Absent: you watched every second, marked the video done, and tagged none.${january}` };
+  if (review === 0 && watched.percent === 100) {
+    return { state: 'absent', text: 'none', reference: referenceText, title: `Absent: you watched every second and tagged none.${january}` };
   }
-  return { state: 'open', text: '0', reference: referenceText, title: `Nothing is tagged yet. This zero does not mean absent until the video is fully watched and marked done.${january}` };
+  return { state: 'open', text: '0', reference: referenceText, title: `Nothing tagged yet. This video is not fully watched and reviewed.${january}` };
 }
 
 /**

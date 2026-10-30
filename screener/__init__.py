@@ -1,1 +1,1 @@
-"""Sponge Screener: click-through ground truth for TCRMP sponge video."""
+"""Sponge Lab: click-through ground truth for TCRMP sponge video."""

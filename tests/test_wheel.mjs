@@ -377,7 +377,7 @@ test('wheelMatches orders the outer ring by the seen counts only while no query 
   assert.deepEqual(w.wheelMatches(SPECIES, PINNED, 'ver', seen).outer, w.wheelMatches(SPECIES, PINNED, 'ver').outer);
 });
 
-test('seenCounts counts the labeled rows of each species and skips Later points', () => {
+test('seenCounts counts the labeled rows of each species and skips review points', () => {
   const rows = [
     { SpeciesCode: 'SAUR', LabelStatus: 'labeled' },
     { SpeciesCode: 'SAUR', LabelStatus: 'labeled' },
@@ -500,6 +500,12 @@ test('wheelMatches refuses a query that is not a string', () => {
 
 // ----------------------------------------------------------------- shortLabel
 
+test('sliceName shows the genus initial and the epithet', () => {
+  assert.equal(w.sliceName('Aplysina cauliformis', 14), 'A. cauliformis');
+  assert.equal(w.sliceName('Plakortis angulospiculatus', 10).length, 10);
+  assert.equal(w.sliceName('Unknown sponge', 14), 'unknown');
+});
+
 test('shortLabel shows the epithet of a binomial', () => {
   assert.equal(w.shortLabel('Aplysina cauliformis', 12), 'cauliformis');
   assert.equal(w.shortLabel('Aplysina cauliformis', 11), 'cauliformis');
@@ -575,9 +581,9 @@ test('spinDelta turns the short way around the list', () => {
 // ---------------------------------------------------------------- restingText
 
 test('restingText tells a new mark from an edit at a glance', () => {
-  assert.equal(w.restingText('new', null, null, 'Later'), 'Pick a species, type to filter, or press Space: Later');
+  assert.equal(w.restingText('new', null, null, 'Review'), 'Pick a species, type to filter, or press Space: Review');
   assert.equal(w.restingText('edit', 'ID001', 'ACAU', 'Unlabel'), 'Changing ID001 ACAU. Pick a species, or press Space: Unlabel');
-  assert.equal(w.restingText('edit', 'ID004', null, 'Keep'), 'Changing ID004, Later point. Pick a species, or press Space: Keep');
+  assert.equal(w.restingText('edit', 'ID004', null, 'Keep'), 'Changing ID004, review point. Pick a species, or press Space: Keep');
 });
 
 test('restingText refuses an unknown mode', () => {
@@ -596,24 +602,24 @@ test('spaceAction types a space into a typed query and otherwise chooses the hub
 // -------------------------------------------------------------------- hubText
 
 test('hubText keeps naming the edited row while the pointer rests on the hub', () => {
-  assert.equal(w.hubText('new', null, null, 'Later'), 'Save the point without a species, to label later');
+  assert.equal(w.hubText('new', null, null, 'Review'), 'Save the point without a species, for review');
   assert.equal(w.hubText('edit', 'ID001', 'ACAU', 'Unlabel'), 'Changing ID001 ACAU. Space or click: Unlabel');
-  assert.equal(w.hubText('edit', 'ID004', null, 'Keep'), 'Changing ID004, Later point. Space or click: Keep');
+  assert.equal(w.hubText('edit', 'ID004', null, 'Keep'), 'Changing ID004, review point. Space or click: Keep');
   assertTypeError(() => w.hubText('move', 'ID001', 'ACAU', 'Unlabel'), 'mode');
 });
 
 // ------------------------------------------------------------ deleting a row
 
-test('rowLabel names a row by its ID and species, or as a Later point', () => {
+test('rowLabel names a row by its ID and species, or as a review point', () => {
   assert.equal(w.rowLabel('ID004', 'ACAU'), 'ID004 ACAU');
-  assert.equal(w.rowLabel('ID004', null), 'ID004, Later point');
+  assert.equal(w.rowLabel('ID004', null), 'ID004, review point');
   assertTypeError(() => w.rowLabel('', 'ACAU'), 'rowId');
   assertTypeError(() => w.rowLabel(null, 'ACAU'), 'rowId');
 });
 
 test('deleteText asks for the second press and names the row', () => {
   assert.equal(w.deleteText('ID004', 'ACAU'), 'Press delete again to delete ID004 ACAU');
-  assert.equal(w.deleteText('ID004', null), 'Press delete again to delete ID004, Later point');
+  assert.equal(w.deleteText('ID004', null), 'Press delete again to delete ID004, review point');
 });
 
 test('deleteKeyAction arms in an edit wheel with no query, and edits any typed query', () => {

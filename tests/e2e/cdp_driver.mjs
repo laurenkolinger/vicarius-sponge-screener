@@ -1,5 +1,5 @@
 /**
- * End-to-end driver for Sponge Screener: one scenario per run, in a headless Chrome that
+ * End-to-end driver for Sponge Lab: one scenario per run, in a headless Chrome that
  * tests/test_e2e.py started. The driver speaks the Chrome DevTools Protocol over a
  * WebSocket, sends real mouse and key events, reads the page through window.__screener,
  * and prints one JSON line with what it saw. It asserts nothing about the app. The pytest
@@ -1040,47 +1040,6 @@ const SCENARIOS = {
     s.fact('afterUnlabel', await readAfterPick(s));
   },
 
-  /** A done video that gets a Later point reopens; a video with a Later point refuses Done. */
-  async done_refused(s, config) {
-    await loadApp(s);
-    await openVideo(s, config, config.key2024);
-    s.step('save a labeled sighting, then press D');
-    await clickPicture(s, 0.30, 0.40);
-    await waitWheel(s, 'new');
-    await s.key('1');
-    await waitRows(s, 1);
-    await s.key('d');
-    await s.waitFor(`document.querySelector('.toast-action')`, 'the warning about unwatched time');
-    await clickElement(s, '.toast-action');
-    await s.waitFor(`${S}.state.videoStatus === 'done'`, 'the video to read done');
-    s.fact('afterDone', await s.evaluate(`({ status: ${S}.state.videoStatus, button: document.getElementById('done-label').textContent, pressed: document.getElementById('done').getAttribute('aria-pressed') })`));
-    s.step('save a Later point in the done video');
-    await rewindIfLate(s);
-    await clickPicture(s, 0.60, 0.55);
-    await waitWheel(s, 'new');
-    await s.key('Space');
-    await waitRows(s, 2);
-    await s.waitFor(`/back in progress/.test(${S}.state.lastToast ? ${S}.state.lastToast.message : '')`, 'the "back in progress" toast');
-    s.fact('afterReopen', await s.evaluate(`({
-      status: ${S}.state.videoStatus,
-      button: document.getElementById('done-label').textContent,
-      pressed: document.getElementById('done').getAttribute('aria-pressed'),
-      toast: ${S}.state.lastToast,
-      toastsOnScreen: Array.from(document.querySelectorAll('#toasts .toast')).map((node) => ({ kind: node.dataset.kind, text: node.dataset.text })),
-      browserBadge: (document.querySelector('.video-row[aria-current="true"] .badge') || {}).textContent,
-    })`));
-    s.fact('laterPost', await s.evaluate(`window.__e2e.log.filter((entry) => entry.url === '/api/observations').map((entry) => ({ status: entry.status, reopened: entry.body && entry.body.reopened, species: entry.body && entry.body.row && entry.body.row.SpeciesCode }))`));
-    s.step('press D with the Later point in the video');
-    await s.key('d');
-    await s.waitFor(`/unlabeled/.test(${S}.state.lastToast ? ${S}.state.lastToast.message : '')`, 'the refusal toast');
-    s.fact('afterRefusal', await s.evaluate(`({
-      status: ${S}.state.videoStatus,
-      button: document.getElementById('done-label').textContent,
-      toast: ${S}.state.lastToast,
-      doneRequests: window.__e2e.log.filter((entry) => entry.url === '/api/videos/done').length,
-    })`));
-  },
-
   /** F enters full screen, the wheel stays inside it, the button re-centers an open wheel. */
   async fullscreen(s, config) {
     await loadApp(s);
@@ -1197,6 +1156,8 @@ const SCENARIOS = {
   /** The guide docks beside the video by default and never covers it; the dock button lets it float. */
   async guide_dock(s, config) {
     await loadApp(s);
+    await s.waitFor(`!document.getElementById('guide').hidden`, 'the guide to open by default');
+    await s.key('i');
     await openVideo(s, config, config.key2024);
     const layout = `(() => {
       const box = (id) => { const b = document.getElementById(id).getBoundingClientRect(); return { left: b.left, right: b.right, top: b.top, bottom: b.bottom, width: b.width }; };
@@ -1223,6 +1184,8 @@ const SCENARIOS = {
   /** With the guide open, the lit wheel species shows in it; a closed guide stays closed; logged species lead the outer ring. */
   async wheel_follows_guide(s, config) {
     await loadApp(s);
+    await s.waitFor(`!document.getElementById('guide').hidden`, 'the guide to open by default');
+    await s.key('i');
     await openVideo(s, config, config.key2024);
     const guideCode = `document.getElementById('guide-species').value`;
     s.step('open the guide, then the wheel');
@@ -1648,7 +1611,22 @@ const SCENARIOS = {
     s.fact('afterButton', await readDeck(s));
   },
 
-  /** Play part of a clip, see Done warn about the rest, and read the coverage grid. */
+  /** Type a species' old name in the wheel and pick what it finds with Enter. */
+  async old_name_search(s, config) {
+    await loadApp(s);
+    await openVideo(s, config, config.key2024);
+    s.step('click, then type compressa and press Enter');
+    await clickPicture(s, 0.30, 0.40);
+    await waitWheel(s, 'new');
+    for (const letter of 'compressa') {
+      await s.key(letter);
+    }
+    s.fact('typed', await s.evaluate(`${S}.wheel().query`));
+    await s.key('Enter');
+    s.fact('rows', await waitRows(s, 1));
+  },
+
+  /** Play part of a clip and read the coverage grid. */
   async coverage_grid(s, config) {
     const [wideW, wideH] = SIZE_PRESETS.wide;
     const [narrowW, narrowH] = SIZE_PRESETS.narrow;
@@ -1657,7 +1635,6 @@ const SCENARIOS = {
       video: row.querySelector('th').textContent,
       watched: row.querySelector('.coverage-watched').textContent,
       unlabeled: row.querySelector('.coverage-number').textContent,
-      status: row.querySelector('.coverage-status').textContent,
       cells: [...row.querySelectorAll('.coverage-cell')].map((cell) => [cell.querySelector('.coverage-count').textContent, cell.dataset.state]),
     }))`);
     await loadApp(s);
@@ -1680,11 +1657,6 @@ const SCENARIOS = {
       headers: { 'Content-Type': 'application/json', 'X-Screener': '1' },
       body: JSON.stringify({ key: ${JSON.stringify(config.key2024)}, ranges: [], duration: null }) })
       .then((answer) => answer.json())`));
-    s.step('press D');
-    await s.key('d');
-    await s.waitFor(`document.querySelector('.toast-action')`, 'the warning about unwatched time');
-    s.fact('warning', await s.evaluate(`${S}.state.lastToast`));
-    s.fact('statusAfterWarning', await s.evaluate(`${S}.state.videoStatus`));
     s.step('open the coverage grid');
     await clickElement(s, '#coverage-toggle');
     await s.waitFor(`document.querySelector('#coverage-grid tbody tr')`, 'the coverage grid');
@@ -1699,15 +1671,6 @@ const SCENARIOS = {
     s.step('press Escape');
     await s.key('Escape');
     s.fact('closed', await s.evaluate(`document.getElementById('coverage').hidden`));
-    s.step('press D with the grid open');
-    await clickElement(s, '#coverage-toggle');
-    await s.waitFor(`document.querySelector('#coverage-grid tbody tr') && !document.getElementById('coverage').hidden`, 'the grid to open again');
-    await s.key('d');
-    await s.waitFor(`document.getElementById('coverage').hidden && document.querySelector('.toast-action')`, 'the grid to close for the warning');
-    s.step('mark done anyway');
-    await clickElement(s, '.toast-action');
-    await s.waitFor(`${S}.state.videoStatus === 'done'`, 'the video to read done');
-    s.fact('statusAfterAction', await s.evaluate(`${S}.state.videoStatus`));
   },
 
   /** Read the key colors with the default pins and with a Part 3 species on key 9, and photograph them. */
@@ -1729,6 +1692,12 @@ const SCENARIOS = {
     await openVideo(s, config, config.key2024);
     await stablePicture(s);
     s.fact('defaults', await readKeys());
+    s.step('rest the pointer on key 2');
+    const keyTwo = await s.evaluate(`(() => { const box = document.querySelector('.pin-slot[data-slot="2"] .pin-choose').getBoundingClientRect(); return { x: box.x + box.width / 2, y: box.y + box.height / 2 }; })()`);
+    await s.mouse('mouseMoved', keyTwo.x, keyTwo.y, { buttons: 0 });
+    await s.waitFor(`document.getElementById('guide-species').value === 'AFUL'`, 'the guide to show the species of key 2');
+    s.fact('guideOpen', await s.evaluate(`!document.getElementById('guide').hidden`));
+    s.fact('gridOff', await s.evaluate(`${S}.state.grid`));
     s.fact('colors', await s.evaluate(`(() => {
       const probe = document.createElement('i');
       document.body.append(probe);

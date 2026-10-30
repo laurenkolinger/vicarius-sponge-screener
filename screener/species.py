@@ -20,6 +20,8 @@ NAME_COLUMN = "ScientificName"
 PART_COLUMN = "GuidePart"
 PIN_COLUMN = "DefaultPin"
 SPECIES_COLUMNS = (CODE_COLUMN, NAME_COLUMN, PART_COLUMN, PIN_COLUMN)
+NAME_CHANGE_COLUMNS = ("Code", "PreviousName", "Source", "Changed")
+NAME_CHANGE_LABEL = "species name changes"
 SPECIES_LABEL = "species"
 CODE_PATTERN = re.compile(r"[A-Z]{4}")
 
@@ -189,3 +191,29 @@ def validate_pins(pins: Any, species: Sequence[Species]) -> Dict[str, Optional[s
         checked[key] = code
         pinned_at[code] = key
     return checked
+
+
+def load_name_changes(path: Path) -> Dict[str, List[Dict[str, str]]]:
+    """Read the species names that changed, so a search for an old name still finds the species.
+
+    Args:
+        path: The path of species_name_changes.csv. A missing file means no changes.
+
+    Returns:
+        ``{code: [{"name", "source", "changed"}, ...]}``, one entry per earlier name.
+
+    Raises:
+        ValueError: When the file lacks a column or holds a bad value.
+    """
+    if not Path(path).exists():
+        return {}
+    changes: Dict[str, List[Dict[str, str]]] = {}
+    for line, row in read_config_table(path, NAME_CHANGE_COLUMNS, NAME_CHANGE_LABEL):
+        where = f"{NAME_CHANGE_LABEL} file {path} line {line}"
+        name = check_config_text(row["PreviousName"], f"{where}: PreviousName")
+        if not name:
+            raise ValueError(f"{where}: PreviousName is blank for {row['Code']}")
+        changes.setdefault(row["Code"], []).append(
+            {"name": name, "source": row["Source"], "changed": row["Changed"]}
+        )
+    return changes

@@ -1,4 +1,4 @@
-# Sponge Screener
+# Sponge Lab
 
 A local tool for building sponge ground truth from TCRMP transect video. It
 streams videos from the public `uviai` S3 bucket. Each sighting is one click on
@@ -103,7 +103,7 @@ inward, and a short leader line points back at the mark.
 The timestamp convention matches the January package: the moment the sponge
 sits closest to the center of the frame.
 
-## Later points and the To label list
+## Review points
 
 The hub of the wheel (or Space) saves the point without a species. A Later
 point is a full row: its frame and crop save at once, `LabelStatus` reads
@@ -111,7 +111,7 @@ point is a full row: its frame and crop save at once, `LabelStatus` reads
 (`ID004_LATER_TOPLEFT_BIT_T1.jpg`). Later marks draw as an amber dashed ring
 with a `?` tag, and amber ticks mark them on the scrub bar.
 
-The To label list in the right panel shows every Later point across all
+The Review list in the right panel shows every Review point across all
 videos, newest first. A click on one opens that video, seeks to the point, and
 opens the wheel on it, with Keep in the hub. Picking a species gives the point
 its label and renames its frame and crop to the new code. The ID and the
@@ -120,23 +120,19 @@ its label and renames its frame and crop to the new code. The ID and the
 To change a saved sighting, click its mark, paused or playing; the video
 pauses and the wheel opens for that row. Its readout starts with `Changing ID001 ACAU`, also
 while the pointer rests on the hub (`Changing ID001 ACAU. Space or click:
-Unlabel`), and the hub ring turns bold white (amber on a Later point) and keeps
+Unlabel`), and the hub ring turns bold white (amber on a Review point) and keeps
 that color when lit, so it never reads like a new mark. Picking another species
-relabels it, and the hub (Unlabel) turns it into a Later point.
+relabels it, and the hub (Unlabel) turns it into a Review point.
 
 To delete the sighting, press Backspace (the Mac delete key) or Delete in that
 wheel with no filter typed. The readout reads `Press delete again to delete
-ID004 ACAU` (or `ID004, Later point`) and the hub ring turns red. A second
+ID004 ACAU` (or `ID004, Review point`) and the hub ring turns red. A second
 press within 3 seconds deletes the row, moves its frame, its crop, and its
 track to the trash, closes the wheel, and leaves the video paused; the toast
 reads `Deleted ID004 ACAU`. Any other key, a move of the pointer to another
 slice, or 3 seconds without the second press keeps the sighting.
 
-Later points stay out of the species tally, the Done status, and the export.
-The Done button refuses while a video holds Later points, because a done video
-tells OnDeck that missing pinned species are absent. Saving a Later point in a
-done video, or unlabeling one of its sightings, moves that video back to in
-progress. The export toast says how many Later points the package left out.
+Review points stay out of the species tally and the export.
 
 ## Tracking
 
@@ -194,24 +190,31 @@ The Coverage button opens a grid of the 8 target species (ID guide Parts 1 and 2
 by every video in the folder on screen, so a zero can be told apart from a video
 nobody finished. Each cell shows your count and, when a January file is present,
 the January count after a J. An amber cell means January logged the species and
-nothing is tagged yet. A cell reads none only when the video is marked done and
-every second was watched.
+nothing is tagged yet. A cell reads none only when every second was watched and
+nothing is left to review.
 
 The app records a stretch as watched while the video plays forward, at any speed
 on the speed control, with the tab in view and neither the Coverage grid nor the
 shortcuts card open. Seeks, arrow-key scrubbing, and frame steps do not count, and
 a gap of 1 second or less counts as watched. The app cannot tell whether you were
-looking at the screen, so a video left playing counts as watched. The Done
-button warns when a stretch was not watched, and its Mark done anyway button goes
-ahead. Viewing from before this feature was never recorded, so watched time starts
+looking at the screen, so a video left playing counts as watched. A video finishes
+by itself once every second is watched and nothing is left to review.
+Viewing from before this feature was never recorded, so watched time starts
 at zero.
 
 To show the January counts, copy the January `observations.csv` to
 `data/reference_observations.csv`.
 
+## Species names
+
+`config/species.csv` holds current names. When a name changes, keep the code and add
+the earlier name to `config/species_name_changes.csv`: a search for the old name still
+finds the species, and the guide shows a notice. Update `data/guide/guide.json` at the
+same time.
+
 ## Where things go
 
-- `data/observations.csv`: one row per sighting or Later point. The first nine
+- `data/observations.csv`: one row per sighting or Review point. The first nine
   columns are the January columns in the same order (Site, Transect, Sponge
   Type, Timestamp, Notes, ID, FileName, FrameFileName, AbbreviatedNote),
   followed by SpeciesCode, TimestampSeconds, Quadrant, PointX, PointY, BoxX,
@@ -220,8 +223,8 @@ To show the January counts, copy the January `observations.csv` to
   height. A file with the older 22-column header still loads, with every row
   read as labeled, and the next write adds the LabelStatus column.
 - `data/frames/` and `data/crops/`: `ID###_CODE_QUADRANT_SITE_TRANSECT.jpg`
-  and the same stem as `.png`. A Later point has `LATER` in place of the code.
-- `data/videos_screened.csv`: which videos were opened, which are marked done,
+  and the same stem as `.png`. A Review point has `LATER` in place of the code.
+- `data/videos_screened.csv`: which videos were opened, which are finished,
   and the pinned species at the time. A finished video with no rows for a
   pinned species counts as a true absence.
 - `data/tracks/`: one `ID###.json` per sighting with a track: its points
@@ -237,7 +240,7 @@ To show the January counts, copy the January `observations.csv` to
   `observations.csv`, `videos_screened.csv`, `tracks.csv` (one row per track
   point of each labeled sighting: ID, SpeciesCode, TimeSeconds, X, Y, the box
   centered on X and Y for a box sighting, and Score), every referenced image,
-  and a README with counts and column definitions. It leaves Later points out, and its README states how many it
+  and a README with counts and column definitions. It leaves Review points out, and its README states how many it
   left out. The export folder defaults to `exports/` here; set `export_root` in
   `data/settings.json` to write straight into a synced Drive folder.
 

@@ -1,4 +1,4 @@
-"""The HTTP server of Sponge Screener: routes, request rules, and the app behind them.
+"""The HTTP server of Sponge Lab: routes, request rules, and the app behind them.
 
 ScreenerApp wires the data layer, the catalog, the relay, the converter, and
 the tracker together and offers one method per route. The request handler turns HTTP into
@@ -34,7 +34,7 @@ from screener.names import load_site_names
 from screener.relay import ChunkRelay, ObjectNotFound, RangeNotSatisfiable, RelayError, parse_range_header
 from screener.s3catalog import CatalogError, S3Catalog
 from screener.settings import Settings, load_settings, save_settings, validate_annotator
-from screener.species import PIN_KEYS, Species, load_species, validate_pins
+from screener.species import PIN_KEYS, Species, load_name_changes, load_species, validate_pins
 from screener.coverage import (
     REFERENCE_FILE,
     WATCHED_FILE,
@@ -48,6 +48,7 @@ from screener.tracking import Tracker
 
 # Files inside the config, data, and cache folders.
 SPECIES_FILE = "species.csv"
+NAME_CHANGES_FILE = "species_name_changes.csv"
 SITES_FILE = "sites.csv"
 SETTINGS_FILE = "settings.json"
 # The ID guide parts that hold the target species.
@@ -317,6 +318,7 @@ class ScreenerApp:
         self.static_dir = Path(static_dir).resolve()
         self.port = port
         self._species: List[Species] = load_species(Path(config_dir) / SPECIES_FILE)
+        self._name_changes = load_name_changes(Path(config_dir) / NAME_CHANGES_FILE)
         site_names = load_site_names(Path(config_dir) / SITES_FILE)
         self.store = ObservationStore(self.data_dir, self._species, site_names)
         self.watch = WatchStore(self.data_dir / WATCHED_FILE)
@@ -386,7 +388,10 @@ class ScreenerApp:
         """Lay out the species list, the pins, the annotator, and the tally target for the page."""
         current = self.settings()
         return {
-            "species": [{"code": item.code, "name": item.name, "part": item.part} for item in self._species],
+            "species": [
+                {"code": item.code, "name": item.name, "part": item.part, "name_changes": self._name_changes.get(item.code, [])}
+                for item in self._species
+            ],
             "pins": current.pins,
             "annotator": current.annotator,
             "tally_target": TALLY_TARGET,
@@ -459,6 +464,7 @@ class ScreenerApp:
                     "status": known["status"],
                     "sightings": known["sightings"],
                     "unlabeled": known["unlabeled"],
+                    "watched_percent": self.watch.summary(entry.key)["percent"],
                     "converted": self.converter.status(entry.key).state,
                 }
             )
@@ -566,6 +572,7 @@ class ScreenerApp:
             row = self.store.set_label(obs_id, species)
         except ValueError as error:
             raise ValueError(_rename_field(str(error))) from error
+        self._finish_if_complete(row["S3Key"])
         return {"row": dict(row), "reopened": row.reopened}
 
     def delete_observation(self, obs_id: str) -> Dict[str, Any]:
@@ -688,7 +695,22 @@ class ScreenerApp:
             StoreError: When watched.json cannot be read or written.
         """
         valid_key = validate_key(key)
-        return {"watched": self.watch.report(valid_key, validate_ranges(ranges), validate_duration(duration))}
+        summary = self.watch.report(valid_key, validate_ranges(ranges), validate_duration(duration))
+        self._finish_if_complete(valid_key)
+        return {"watched": summary}
+
+    def _finish_if_complete(self, key: str) -> None:
+        """Mark a video done once every second was watched and nothing is left to review.
+
+        Args:
+            key: The validated video key.
+
+        Raises:
+            StoreError: When a data file cannot be read or written.
+        """
+        known = self.store.video_status().get(key)
+        if known and known["status"] != "done" and not known["unlabeled"] and self.watch.summary(key)["percent"] == 100:
+            self.finish_video(key, True)
 
     def coverage_payload(self, prefix: str) -> Dict[str, Any]:
         """Lay out the target species of every video in a folder.
@@ -829,7 +851,7 @@ class _Handler(BaseHTTPRequestHandler):
     """
 
     protocol_version = "HTTP/1.1"
-    server_version = f"SpongeScreener/{VERSION}"
+    server_version = f"SpongeLab/{VERSION}"
     timeout = SOCKET_TIMEOUT_SECONDS
 
     _status = 0

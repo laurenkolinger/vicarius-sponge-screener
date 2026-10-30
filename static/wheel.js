@@ -9,7 +9,7 @@
  * what these functions compute.
  */
 
-import { binomialParts, filterSpecies, labelStatus } from './geometry.js';
+import { abbreviatedName, binomialParts, filterSpecies, labelStatus } from './geometry.js';
 
 /** Sizes in CSS pixels at scale 1, and the ring layout. */
 export const WHEEL = Object.freeze({
@@ -432,7 +432,7 @@ export function restingText(mode, rowId, current, hubLabel) {
  */
 export function hubText(mode, rowId, current, hubLabel) {
   if (mode === 'new') {
-    return 'Save the point without a species, to label later';
+    return 'Save the point without a species, for review';
   }
   return `${changingText(mode, rowId, current, 'hubText')} Space or click: ${hubLabel}`;
 }
@@ -464,7 +464,7 @@ export function rowLabel(rowId, current) {
   if (typeof rowId !== 'string' || rowId === '') {
     throw new TypeError(`rowLabel: rowId must be a non-empty string, got ${JSON.stringify(rowId)}`);
   }
-  return current ? `${rowId} ${current}` : `${rowId}, Later point`;
+  return current ? `${rowId} ${current}` : `${rowId}, review point`;
 }
 
 /**
@@ -597,6 +597,20 @@ export function wheelMatches(species, pinnedCodes, query, seen = new Map()) {
     inner: order.filter((code) => pinned.has(code)),
     outer: order.filter((code) => !pinned.has(code)),
   };
+}
+
+/**
+ * Word a species name for a wheel slice: the genus initial and the epithet.
+ * @param {string} name The scientific name, such as "Aplysina cauliformis".
+ * @param {number} maxChars The longest label, ellipsis included.
+ * @returns {string} Such as "A. cauliformis", cut with an ellipsis when it is longer.
+ */
+export function sliceName(name, maxChars) {
+  if (!binomialParts(name)) {
+    return shortLabel(name, maxChars);
+  }
+  const label = abbreviatedName(name);
+  return label.length > maxChars ? `${label.slice(0, maxChars - 1)}${ELLIPSIS}` : label;
 }
 
 /**

@@ -113,7 +113,7 @@ class Rig:
     @property
     def launcher(self) -> Path:
         """The launcher the installer writes."""
-        return self.home / "Applications" / "Sponge Screener.app" / "Contents" / "MacOS" / "launch"
+        return self.home / "Applications" / "Sponge Lab.app" / "Contents" / "MacOS" / "launch"
 
     @property
     def plist_path(self) -> Path:

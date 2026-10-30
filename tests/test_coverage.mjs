@@ -110,25 +110,25 @@ test('a held arrow key plays faster than any speed on the control, so a scrub ne
 });
 
 test('a tagged species shows its count', () => {
-  const cell = targetCell(3, 7, { percent: 40 }, false);
+  const cell = targetCell(3, 7, { percent: 40 }, 0);
   assert.equal(cell.state, 'tagged');
   assert.equal(cell.text, '3');
   assert.equal(cell.reference, 'J7');
 });
 
 test('zero tags with a January sighting is flagged', () => {
-  assert.equal(targetCell(0, 2, { percent: 100 }, true).state, 'missing');
+  assert.equal(targetCell(0, 2, { percent: 100 }, 0).state, 'missing');
 });
 
-test('zero tags reads absent only on a done, fully watched video', () => {
-  assert.equal(targetCell(0, 0, { percent: 100 }, true).state, 'absent');
-  assert.equal(targetCell(0, 0, { percent: 99 }, true).state, 'open');
-  assert.equal(targetCell(0, 0, { percent: 100 }, false).state, 'open');
-  assert.equal(targetCell(0, 0, { percent: null }, true).state, 'open');
+test('zero tags reads absent only on a fully watched video with nothing left to review', () => {
+  assert.equal(targetCell(0, 0, { percent: 100 }, 0).state, 'absent');
+  assert.equal(targetCell(0, 0, { percent: 99 }, 0).state, 'open');
+  assert.equal(targetCell(0, 0, { percent: 100 }, 2).state, 'open');
+  assert.equal(targetCell(0, 0, { percent: null }, 0).state, 'open');
 });
 
 test('no reference file leaves the January number out', () => {
-  assert.equal(targetCell(3, null, { percent: 40 }, false).reference, '');
+  assert.equal(targetCell(3, null, { percent: 40 }, 0).reference, '');
 });
 
 test('a video label is the site and transect', () => {
