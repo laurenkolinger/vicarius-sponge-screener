@@ -31,6 +31,16 @@ python3 screener.py
 The server binds to `127.0.0.1:8770` and opens Chrome. Options: `--port`,
 `--no-browser`, `--data-dir`, `--cache-dir`, `--bucket-url`.
 
+`tools/install_dock_app.sh` builds a Dock app that does the same with one click.
+The app asks launchd to run the server as the service
+`edu.uvi.vicar.sponge-screener.server`, because macOS stops any process an app
+leaves behind when the app exits. The service starts only when you click the app
+and keeps running after Chrome closes. Stop it with:
+
+```bash
+launchctl kill SIGTERM gui/$(id -u)/edu.uvi.vicar.sponge-screener.server
+```
+
 ## Screening
 
 1. Pick a folder and a video in the left panel. Videos marked "converts first"
@@ -178,6 +188,27 @@ view. In full screen the page asks Chrome for the Escape key, so Escape cancels
 the wheel. A long press on Escape leaves full screen, and so does F while the
 wheel is closed; with the wheel open, F types into the filter like any letter.
 
+## Coverage
+
+The Coverage button opens a grid of the 8 target species (ID guide Parts 1 and 2)
+by every video in the folder on screen, so a zero can be told apart from a video
+nobody finished. Each cell shows your count and, when a January file is present,
+the January count after a J. An amber cell means January logged the species and
+nothing is tagged yet. A cell reads none only when the video is marked done and
+every second was watched.
+
+The app records a stretch as watched while the video plays forward, at any speed
+on the speed control, with the tab in view and neither the Coverage grid nor the
+shortcuts card open. Seeks, arrow-key scrubbing, and frame steps do not count, and
+a gap of 1 second or less counts as watched. The app cannot tell whether you were
+looking at the screen, so a video left playing counts as watched. The Done
+button warns when a stretch was not watched, and its Mark done anyway button goes
+ahead. Viewing from before this feature was never recorded, so watched time starts
+at zero.
+
+To show the January counts, copy the January `observations.csv` to
+`data/reference_observations.csv`.
+
 ## Where things go
 
 - `data/observations.csv`: one row per sighting or Later point. The first nine
@@ -197,6 +228,8 @@ wheel is closed; with the wheel open, F types into the filter like any letter.
   `[t, x, y, score]` (t in video seconds, x and y as fractions of the frame,
   score from 0 to 1), the box size of a box sighting, and the sighting's video
   key and time.
+- `data/watched.json`: the watched stretches of each video, in seconds. Export
+  leaves this file out.
 - `data/settings.json`: annotator initials, pinned species, export folder.
 - `cache/`: video chunks (capped at 60 GB, oldest removed first), converted
   files, and the bucket listing.

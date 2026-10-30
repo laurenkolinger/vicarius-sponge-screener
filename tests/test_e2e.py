@@ -760,6 +760,51 @@ def test_shift_digit_plays_on(drive: Callable[[str], Dict[str, Any]], app: Runni
         assert_images(app, row, row["SpeciesCode"], SUFFIX_2024)
 
 
+def test_coverage_grid(drive: Callable[[str], Dict[str, Any]]) -> None:
+    """Playing part of a clip shows in the grid, Done warns about the rest, and the warning's button goes ahead."""
+    facts = drive("coverage_grid")["facts"]
+    assert facts["warning"]["message"].startswith("You have not watched ")
+    covered = [gap for gap in facts["watched"]["watched"]["gaps"] if gap[0] < facts["closedAt"] and gap[1] > facts["openedAt"]]
+    assert len(covered) == 1, facts["watched"]
+    assert abs(covered[0][0] - facts["openedAt"]) < 1 and abs(covered[0][1] - facts["closedAt"]) < 1, covered
+    assert facts["statusAfterWarning"] != "done"
+    assert [code for code, _ in facts["headers"]] == ["ACAU", "CDEL", "MLAE", "CPLI", "AFUL", "ACRA", "ACOM", "XMUT"]
+    assert [tier for _, tier in facts["headers"]] == ["original"] * 4 + ["added"] * 4
+    row = next(item for item in facts["grid"] if item["key"] == KEY_2024)
+    assert row["video"] == "BIT T1"
+    assert 0 < int(row["watched"].rstrip("%")) < 100, row
+    assert row["cells"] == [["0", "open"]] * 8
+    assert facts["narrowOverflow"] is False
+    assert facts["closed"] is True
+    assert facts["statusAfterAction"] == "done"
+
+
+def test_pin_colors(drive: Callable[[str], Dict[str, Any]]) -> None:
+    """Part 1 keys are green and Part 2 keys pink, in any mode; Part 3 and empty keys stay gray."""
+    facts = drive("pin_colors")["facts"]
+    green, pink, gray = facts["colors"]["green"], facts["colors"]["pink"], facts["colors"]["line"]
+    expected = {
+        "ACAU": ("original", green), "CDEL": ("original", green), "MLAE": ("original", green), "CPLI": ("original", green),
+        "AFUL": ("added", pink), "ACRA": ("added", pink), "ACOM": ("added", pink), "XMUT": ("added", pink),
+        "": ("other", gray),
+    }
+    for keys in (facts["defaults"], facts["marking"]):
+        assert len(keys) == 10
+        for key in keys:
+            tier, color = expected[key["code"]]
+            assert key["tier"] == tier and key["border"] == color, key
+            if tier != "other":
+                assert key["ink"] == color, key
+    assert facts["hoverFilter"] == "brightness(1.3)"
+    assert sum(key["tier"] == "original" for key in facts["defaults"]) == 4
+    assert sum(key["tier"] == "added" for key in facts["defaults"]) == 4
+    assert all("Green:" in key["label"] for key in facts["defaults"] if key["tier"] == "original")
+    assert all("Pink:" in key["label"] for key in facts["defaults"] if key["tier"] == "added")
+    nine = next(key for key in facts["repinned"] if key["slot"] == "9")
+    assert nine["code"] == "SAUR" and nine["tier"] == "other" and nine["border"] == gray, nine
+    assert "Gray:" in nine["label"]
+
+
 def test_screenshots(drive: Callable[[str], Dict[str, Any]]) -> None:
     """Screenshots of the wheel at 1280 x 800, 946 x 700, and full screen, a Later mark, and a flash label."""
     result = drive("screenshots")

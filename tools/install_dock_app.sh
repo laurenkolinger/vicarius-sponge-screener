@@ -1,14 +1,42 @@
 #!/bin/bash
 # Build "Sponge Screener.app" in ~/Applications and put it in the Dock.
 #
-# The app starts the screener server, restarts it when the code changed since
-# it started, and opens Chrome on it. Run this script again after moving the project folder.
+# The app asks launchd to run the screener server, restarts it when the code
+# changed since it started, and opens Chrome on it. macOS stops any process an
+# app leaves behind when the app exits, so the server has to be a launchd
+# service rather than a child of the app. Run this script again after moving
+# the project folder; doing so stops a running server.
 set -euo pipefail
 
 PROJECT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="$HOME/Applications"
 APP="$APP_DIR/Sponge Screener.app"
+LABEL="edu.uvi.vicar.sponge-screener.server"
+AGENT_PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 PORT="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from screener import config; print(config.PORT)' "$PROJECT")"
+
+# The service starts only when the app asks and stays stopped once stopped.
+# Removing the old one first makes launchd read the new definition.
+launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+mkdir -p "$(dirname "$AGENT_PLIST")"
+python3 - "$AGENT_PLIST" "$LABEL" "$PROJECT" <<'PY'
+import plistlib
+import sys
+
+path, label, project = sys.argv[1:]
+log = f"{project}/data/screener.log"
+service = {
+    "Label": label,
+    "ProgramArguments": ["/usr/bin/env", "python3", f"{project}/screener.py", "--no-browser"],
+    "WorkingDirectory": project,
+    "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"},
+    "StandardOutPath": log,
+    "StandardErrorPath": log,
+    "ProcessType": "Interactive",
+}
+with open(path, "wb") as handle:
+    plistlib.dump(service, handle)
+PY
 
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
@@ -36,9 +64,12 @@ cat > "$APP/Contents/MacOS/launch" <<'LAUNCH'
 #!/bin/bash
 # Start Sponge Screener and open it in Chrome. A server that started before
 # the code last changed is restarted, so the app always runs the newest code.
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-PROJECT="__PROJECT__"
+PROJECT=__PROJECT__
 PORT="__PORT__"
+LABEL="__LABEL__"
+DOMAIN="gui/$(id -u)"
+SERVICE="$DOMAIN/$LABEL"
+AGENT_PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 URL="http://127.0.0.1:$PORT/"
 LOG="$PROJECT/data/screener.log"
 START_WAIT_TENTHS=200
@@ -69,8 +100,8 @@ if [ -n "$pid" ] && healthy; then
   fi
 fi
 if ! healthy; then
-  cd "$PROJECT"
-  nohup python3 "$PROJECT/screener.py" --no-browser >> "$LOG" 2>&1 < /dev/null &
+  launchctl print "$SERVICE" > /dev/null 2>&1 || launchctl bootstrap "$DOMAIN" "$AGENT_PLIST" >> "$LOG" 2>&1
+  launchctl kickstart "$SERVICE" >> "$LOG" 2>&1
   for _ in $(seq 1 "$START_WAIT_TENTHS"); do healthy && break; sleep 0.1; done
   if ! healthy; then
     osascript -e "display alert \"Sponge Screener did not start\" message \"The reason is at the end of $LOG.\""
@@ -79,7 +110,17 @@ if ! healthy; then
 fi
 open -a "Google Chrome" "$URL" 2>/dev/null || open "$URL"
 LAUNCH
-sed -i '' -e "s|__PROJECT__|$PROJECT|" -e "s|__PORT__|$PORT|" "$APP/Contents/MacOS/launch"
+python3 - "$APP/Contents/MacOS/launch" "$PROJECT" "$PORT" "$LABEL" <<'PY'
+import shlex
+import sys
+
+path, project, port, label = sys.argv[1:]
+with open(path) as handle:
+    text = handle.read()
+text = text.replace("__PROJECT__", shlex.quote(project)).replace("__PORT__", port).replace("__LABEL__", label)
+with open(path, "w") as handle:
+    handle.write(text)
+PY
 chmod +x "$APP/Contents/MacOS/launch"
 
 # Icon: one PNG drawn in Python, resized into the sizes an .icns needs.

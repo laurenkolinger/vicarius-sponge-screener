@@ -1050,6 +1050,8 @@ const SCENARIOS = {
     await s.key('1');
     await waitRows(s, 1);
     await s.key('d');
+    await s.waitFor(`document.querySelector('.toast-action')`, 'the warning about unwatched time');
+    await clickElement(s, '.toast-action');
     await s.waitFor(`${S}.state.videoStatus === 'done'`, 'the video to read done');
     s.fact('afterDone', await s.evaluate(`({ status: ${S}.state.videoStatus, button: document.getElementById('done-label').textContent, pressed: document.getElementById('done').getAttribute('aria-pressed') })`));
     s.step('save a Later point in the done video');
@@ -1644,6 +1646,118 @@ const SCENARIOS = {
     s.step('click the panel button');
     await clickElement(s, '#deck-toggle');
     s.fact('afterButton', await readDeck(s));
+  },
+
+  /** Play part of a clip, see Done warn about the rest, and read the coverage grid. */
+  async coverage_grid(s, config) {
+    const [wideW, wideH] = SIZE_PRESETS.wide;
+    const [narrowW, narrowH] = SIZE_PRESETS.narrow;
+    const readGrid = () => s.evaluate(`[...document.querySelectorAll('#coverage-grid tbody tr')].map((row) => ({
+      key: row.dataset.key,
+      video: row.querySelector('th').textContent,
+      watched: row.querySelector('.coverage-watched').textContent,
+      unlabeled: row.querySelector('.coverage-number').textContent,
+      status: row.querySelector('.coverage-status').textContent,
+      cells: [...row.querySelectorAll('.coverage-cell')].map((cell) => [cell.querySelector('.coverage-count').textContent, cell.dataset.state]),
+    }))`);
+    await loadApp(s);
+    s.step('set the 1280 x 800 viewport');
+    await s.call('Emulation.setDeviceMetricsOverride', { width: wideW, height: wideH, deviceScaleFactor: 1, mobile: false });
+    await openVideo(s, config, config.key2024, 0);
+    await stablePicture(s);
+    s.step('play with the coverage grid open over the video for a stretch');
+    await s.waitFor(`${V}.currentTime > 2`, 'the clip to play past 2 s');
+    await clickElement(s, '#coverage-toggle');
+    s.fact('openedAt', await s.evaluate(`${V}.currentTime`));
+    await s.waitFor(`${V}.currentTime > 5`, 'the clip to play past 5 s');
+    await s.key('Escape');
+    s.fact('closedAt', await s.evaluate(`${V}.currentTime`));
+    await s.waitFor(`${V}.currentTime > 6.5`, 'the clip to play past 6.5 s');
+    await s.evaluate(`${V}.pause()`);
+    await s.waitFor(`${V}.paused`, 'the video to pause');
+    await sleep(STILL_MS);
+    s.fact('watched', await s.evaluate(`fetch('/api/videos/watched', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Screener': '1' },
+      body: JSON.stringify({ key: ${JSON.stringify(config.key2024)}, ranges: [], duration: null }) })
+      .then((answer) => answer.json())`));
+    s.step('press D');
+    await s.key('d');
+    await s.waitFor(`document.querySelector('.toast-action')`, 'the warning about unwatched time');
+    s.fact('warning', await s.evaluate(`${S}.state.lastToast`));
+    s.fact('statusAfterWarning', await s.evaluate(`${S}.state.videoStatus`));
+    s.step('open the coverage grid');
+    await clickElement(s, '#coverage-toggle');
+    await s.waitFor(`document.querySelector('#coverage-grid tbody tr')`, 'the coverage grid');
+    s.fact('headers', await s.evaluate(`[...document.querySelectorAll('.coverage-species')].map((cell) => [cell.textContent, cell.dataset.tier])`));
+    s.fact('grid', await readGrid());
+    await s.shot('coverage-1280x800');
+    s.step('set the 946 x 700 viewport');
+    await s.call('Emulation.setDeviceMetricsOverride', { width: narrowW, height: narrowH, deviceScaleFactor: 1, mobile: false });
+    await sleep(LAYOUT_SETTLE_MS);
+    s.fact('narrowOverflow', await s.evaluate(`document.getElementById('coverage').scrollWidth > document.getElementById('coverage').clientWidth`));
+    await s.shot('coverage-946x700');
+    s.step('press Escape');
+    await s.key('Escape');
+    s.fact('closed', await s.evaluate(`document.getElementById('coverage').hidden`));
+    s.step('press D with the grid open');
+    await clickElement(s, '#coverage-toggle');
+    await s.waitFor(`document.querySelector('#coverage-grid tbody tr') && !document.getElementById('coverage').hidden`, 'the grid to open again');
+    await s.key('d');
+    await s.waitFor(`document.getElementById('coverage').hidden && document.querySelector('.toast-action')`, 'the grid to close for the warning');
+    s.step('mark done anyway');
+    await clickElement(s, '.toast-action');
+    await s.waitFor(`${S}.state.videoStatus === 'done'`, 'the video to read done');
+    s.fact('statusAfterAction', await s.evaluate(`${S}.state.videoStatus`));
+  },
+
+  /** Read the key colors with the default pins and with a Part 3 species on key 9, and photograph them. */
+  async pin_colors(s, config) {
+    const readKeys = () => s.evaluate(`[...document.querySelectorAll('.pin-slot')].map((slot) => ({
+      slot: slot.dataset.slot,
+      code: slot.dataset.code,
+      tier: slot.dataset.tier,
+      border: getComputedStyle(slot.querySelector('.pin-choose')).borderTopColor,
+      ink: getComputedStyle(slot.querySelector('.pin-code')).color,
+      label: slot.querySelector('.pin-choose').getAttribute('aria-label'),
+    }))`);
+    const [wideW, wideH] = SIZE_PRESETS.wide;
+    const [narrowW, narrowH] = SIZE_PRESETS.narrow;
+    await loadApp(s);
+    s.step('set the 1280 x 800 viewport and show the keys');
+    await s.call('Emulation.setDeviceMetricsOverride', { width: wideW, height: wideH, deviceScaleFactor: 1, mobile: false });
+    if (!(await readDeck(s)).shown) await s.key('p');
+    await openVideo(s, config, config.key2024);
+    await stablePicture(s);
+    s.fact('defaults', await readKeys());
+    s.fact('colors', await s.evaluate(`(() => {
+      const probe = document.createElement('i');
+      document.body.append(probe);
+      const read = (name) => { probe.style.color = 'var(' + name + ')'; return getComputedStyle(probe).color; };
+      const colors = { green: read('--green'), pink: read('--mark'), line: read('--line-strong') };
+      probe.remove();
+      return colors;
+    })()`));
+    await s.shot('keys-1280x800');
+    s.step('hover over key 1');
+    const keyOne = await s.evaluate(`(() => { const box = document.querySelector('.pin-slot[data-slot="1"] .pin-choose').getBoundingClientRect(); return { x: box.x + box.width / 2, y: box.y + box.height / 2 }; })()`);
+    await s.mouse('mouseMoved', keyOne.x, keyOne.y);
+    await sleep(STILL_MS);
+    s.fact('hoverFilter', await s.evaluate(`getComputedStyle(document.querySelector('.pin-slot[data-slot="1"] .pin-choose')).filter`));
+    await s.mouse('mouseMoved', 1, 1);
+    s.step('look while marking');
+    await clickPicture(s, 0.30, 0.40);
+    await waitWheel(s, 'new');
+    s.fact('marking', await readKeys());
+    await s.key('Escape');
+    s.step('set the 946 x 700 viewport');
+    await s.call('Emulation.setDeviceMetricsOverride', { width: narrowW, height: narrowH, deviceScaleFactor: 1, mobile: false });
+    await sleep(LAYOUT_SETTLE_MS);
+    await s.shot('keys-946x700');
+    s.step('pin a Part 3 species to key 9');
+    await s.evaluate(`fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Screener': '1' },
+      body: JSON.stringify({ pins: { ...${S}.state.pins, 9: 'SAUR' } }) }).then((answer) => answer.status)`);
+    await reloadApp(s, 'the page with the new pin');
+    s.fact('repinned', await readKeys());
   },
 
   /** Screenshots: the wheel at two window sizes and in full screen, a Later mark, and a flash label. */

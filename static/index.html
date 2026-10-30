@@ -42,6 +42,8 @@
         <input id="annotator" class="input input-short" type="text" maxlength="12" autocomplete="off" spellcheck="false"
                title="You type your initials here. The server writes them into the Annotator column of every sighting you save.">
       </label>
+      <button id="coverage-toggle" type="button" class="button" aria-expanded="false" aria-controls="coverage"
+              title="You open the coverage grid: the 8 target species in every video of this folder, the January counts, and how much of each video you watched.">Coverage</button>
       <button id="export" type="button" class="button"
               title="You export the ground-truth package. The server copies both tables and every frame and crop into a dated folder inside the OnDeck Drive folder.">Export</button>
       <button id="guide-toggle" type="button" class="button" aria-expanded="false" aria-controls="guide"
@@ -172,6 +174,17 @@
           </div>
           <p id="guide-text" class="guide-text"></p>
           <div id="guide-images" class="guide-images"></div>
+        </div>
+
+        <div id="coverage" class="help coverage" role="dialog" aria-label="Coverage of the target species" hidden>
+          <div class="help-head">
+            <h2 class="panel-title">Coverage <span id="coverage-folder" class="coverage-folder"></span></h2>
+            <button id="coverage-close" type="button" class="button button-icon" aria-label="Close the coverage grid"
+                    title="You close this grid. The Escape key does the same.">
+              <svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg>
+            </button>
+          </div>
+          <div id="coverage-grid"></div>
         </div>
 
         <div id="help" class="help" role="dialog" aria-label="Keyboard shortcuts" hidden>

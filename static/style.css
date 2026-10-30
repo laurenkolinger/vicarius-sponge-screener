@@ -869,6 +869,44 @@ body[data-mode="marking"] .deck {
   font-style: normal;
 }
 
+/* Key color follows the species: green for guide Part 1, pink for Part 2, gray for the rest. */
+.pin-slot[data-tier="original"] {
+  --pin-color: var(--green);
+  --pin-soft: var(--green-soft);
+}
+
+.pin-slot[data-tier="added"] {
+  --pin-color: var(--mark);
+  --pin-soft: var(--mark-soft);
+}
+
+.pin-slot[data-tier="original"] .pin-choose,
+.pin-slot[data-tier="added"] .pin-choose {
+  border-color: var(--pin-color);
+  background: var(--pin-soft);
+}
+
+.pin-slot[data-tier="original"] .pin-choose:hover,
+.pin-slot[data-tier="added"] .pin-choose:hover {
+  filter: brightness(1.3);
+}
+
+.pin-slot[data-tier="original"] .pin-key,
+.pin-slot[data-tier="added"] .pin-key {
+  border-color: var(--pin-color);
+  color: var(--pin-color);
+}
+
+.pin-slot[data-tier="original"] .pin-code,
+.pin-slot[data-tier="added"] .pin-code {
+  color: var(--pin-color);
+}
+
+.pin-slot[data-tier="original"] .pin-name,
+.pin-slot[data-tier="added"] .pin-name {
+  color: var(--text-2);
+}
+
 body[data-mode="marking"] .pin-key,
 body[data-mode="marking"] .pin-code {
   color: var(--text);
@@ -1331,6 +1369,7 @@ body[data-mode="marking"] .mark-summary {
 }
 
 .toast:has(.toast-action) {
+  pointer-events: auto;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -1365,6 +1404,115 @@ body[data-mode="marking"] .mark-summary {
   border-radius: 10px;
   background: #1b1b1b;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.65);
+}
+
+.coverage {
+  width: min(900px, calc(100vw - 24px));
+}
+
+.coverage-folder {
+  margin-left: 8px;
+  color: var(--text-3);
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.coverage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.coverage-table th,
+.coverage-table td {
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-2);
+  font-weight: 400;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.coverage-table thead th {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.coverage-table tbody th,
+.coverage-table tfoot th {
+  text-align: left;
+}
+
+.coverage-table tfoot th,
+.coverage-table tfoot td {
+  border-top: 1px solid var(--line-strong);
+  border-bottom: 0;
+  color: var(--text);
+}
+
+.coverage-table .coverage-species {
+  font-family: var(--font-mono);
+  font-weight: 700;
+}
+
+.coverage-table .coverage-species[data-tier="original"] {
+  color: var(--green);
+}
+
+.coverage-table .coverage-species[data-tier="added"] {
+  color: var(--mark);
+}
+
+.coverage-open {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.coverage-open:hover {
+  text-decoration: underline;
+}
+
+.coverage-count {
+  font-family: var(--font-mono);
+  font-weight: 700;
+}
+
+.coverage-reference {
+  margin-left: 4px;
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.coverage-cell[data-state="open"] .coverage-count {
+  color: var(--text-3);
+  font-weight: 400;
+}
+
+.coverage-cell[data-state="tagged"] .coverage-count {
+  color: var(--text);
+}
+
+.coverage-table .coverage-cell[data-state="missing"] {
+  background: var(--amber-soft);
+}
+
+.coverage-cell[data-state="missing"] .coverage-count {
+  color: var(--amber);
+}
+
+.coverage-cell[data-state="absent"] .coverage-count {
+  color: var(--text-2);
+  font-family: inherit;
+  font-weight: 400;
+}
+
+.coverage-table .coverage-watched[data-complete="true"] {
+  color: var(--green);
 }
 
 .help-head {

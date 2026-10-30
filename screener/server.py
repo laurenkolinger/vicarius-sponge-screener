@@ -29,12 +29,20 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 from screener.config import KEY_PREFIX, MAX_BODY_BYTES, PLAYABLE_EXTENSIONS, TALLY_TARGET, TRACK_PYTHON, TRACK_WORKER, VERSION
 from screener.convert import Converter, ConvertError, ConvertStatus
 from screener.export import ExportError, export_package
-from screener.keys import extension_of, quote_key
+from screener.keys import extension_of, quote_key, validate_key
 from screener.names import load_site_names
 from screener.relay import ChunkRelay, ObjectNotFound, RangeNotSatisfiable, RelayError, parse_range_header
 from screener.s3catalog import CatalogError, S3Catalog
 from screener.settings import Settings, load_settings, save_settings, validate_annotator
 from screener.species import PIN_KEYS, Species, load_species, validate_pins
+from screener.coverage import (
+    REFERENCE_FILE,
+    WATCHED_FILE,
+    WatchStore,
+    load_reference_counts,
+    validate_duration,
+    validate_ranges,
+)
 from screener.store import ID_PATTERN, ObservationStore, StoreError, UnknownObservation
 from screener.tracking import Tracker
 
@@ -42,6 +50,8 @@ from screener.tracking import Tracker
 SPECIES_FILE = "species.csv"
 SITES_FILE = "sites.csv"
 SETTINGS_FILE = "settings.json"
+# The ID guide parts that hold the target species.
+TARGET_PARTS = ("1", "2")
 CATALOG_FILE = "catalog.json"
 INDEX_FILE = "index.html"
 
@@ -309,6 +319,7 @@ class ScreenerApp:
         self._species: List[Species] = load_species(Path(config_dir) / SPECIES_FILE)
         site_names = load_site_names(Path(config_dir) / SITES_FILE)
         self.store = ObservationStore(self.data_dir, self._species, site_names)
+        self.watch = WatchStore(self.data_dir / WATCHED_FILE)
         self._settings_path = self.data_dir / SETTINGS_FILE
         self._settings_lock = threading.Lock()
         self._settings = load_settings(self._settings_path, self._species)
@@ -658,6 +669,71 @@ class ScreenerApp:
         current = self.settings()
         return {"video": self.store.mark_done(key, done, current.annotator, self.pinned_codes())}
 
+    # ----- coverage -----
+
+    def report_watched(self, key: Any, ranges: Any, duration: Any) -> Dict[str, Any]:
+        """Add watched stretches to a video and return how much of it was watched.
+
+        Args:
+            key: The video's key.
+            ranges: A list of ``[start, end]`` pairs in seconds. An empty list only reads.
+            duration: The video's length in seconds, or None when it is not known yet.
+
+        Returns:
+            ``{"watched": <the summary from coverage.summarize>}``.
+
+        Raises:
+            InvalidKey: When the key breaks the key rules.
+            ValueError: Starting with ``ranges`` or ``duration`` for a bad value.
+            StoreError: When watched.json cannot be read or written.
+        """
+        valid_key = validate_key(key)
+        return {"watched": self.watch.report(valid_key, validate_ranges(ranges), validate_duration(duration))}
+
+    def coverage_payload(self, prefix: str) -> Dict[str, Any]:
+        """Lay out the target species of every video in a folder.
+
+        Args:
+            prefix: The folder to list.
+
+        Returns:
+            ``species`` (the species in ID guide Parts 1 and 2), ``has_reference``, and
+            ``videos``, each with its key, name, status, unlabeled count, ``watched``
+            summary, ``counts`` (labeled sightings per code), and ``reference``
+            (January sightings per code, or null without a reference file).
+
+        Raises:
+            InvalidKey: When the prefix breaks the key rules.
+            CatalogError: When the bucket cannot be listed and no listing is saved.
+            StoreError: When a data file cannot be parsed.
+        """
+        page = self.catalog_page(prefix, False)
+        targets = sorted((item for item in self._species if item.part in TARGET_PARTS), key=lambda item: item.part)
+        codes = [item.code for item in targets]
+        reference = load_reference_counts(self.data_dir / REFERENCE_FILE, self._species)
+        rows = self.store.rows(status="labeled")
+        videos = []
+        for video in page["videos"]:
+            sightings = [row["SpeciesCode"] for row in rows if row["S3Key"] == video["key"]]
+            earlier = None if reference is None else reference.get(video["name"].casefold(), {})
+            videos.append(
+                {
+                    "key": video["key"],
+                    "name": video["name"],
+                    "status": video["status"],
+                    "unlabeled": video["unlabeled"],
+                    "watched": self.watch.summary(video["key"]),
+                    "counts": {code: sightings.count(code) for code in codes},
+                    "reference": None if earlier is None else {code: earlier.get(code, 0) for code in codes},
+                }
+            )
+        return {
+            "prefix": page["prefix"],
+            "species": [{"code": item.code, "name": item.name, "part": item.part} for item in targets],
+            "has_reference": reference is not None,
+            "videos": videos,
+        }
+
     # ----- conversion and prefetch -----
 
     def start_conversion(self, key: Any) -> Dict[str, Any]:
@@ -770,6 +846,8 @@ class _Handler(BaseHTTPRequestHandler):
         "/api/settings": {"POST": "_post_settings"},
         "/api/observations": {"GET": "_get_observations", "POST": "_post_observation"},
         "/api/tally": {"GET": "_get_tally"},
+        "/api/coverage": {"GET": "_get_coverage"},
+        "/api/videos/watched": {"POST": "_post_watched"},
         "/api/tracks": {"GET": "_get_tracks"},
         "/api/videos/open": {"POST": "_post_open"},
         "/api/videos/done": {"POST": "_post_done"},
@@ -1320,6 +1398,18 @@ class _Handler(BaseHTTPRequestHandler):
         """Record that a video was opened."""
         body = self._object_body()
         self._send_json(HTTP_OK, self.server.app.open_video(self._body_field(body, "key")))
+
+    def _get_coverage(self, rest: str, query: Dict[str, List[str]]) -> None:
+        """Answer the target species of every video in a folder."""
+        self._send_json(HTTP_OK, self.server.app.coverage_payload(self._required_query(query, "prefix")))
+
+    def _post_watched(self, rest: str, query: Dict[str, List[str]]) -> None:
+        """Add watched stretches to a video."""
+        body = self._object_body()
+        key = self._body_field(body, "key")
+        ranges = self._body_field(body, "ranges")
+        duration = self._body_field(body, "duration")
+        self._send_json(HTTP_OK, self.server.app.report_watched(key, ranges, duration))
 
     def _post_done(self, rest: str, query: Dict[str, List[str]]) -> None:
         """Mark a video done or in progress."""

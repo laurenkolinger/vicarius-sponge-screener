@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -2010,3 +2011,114 @@ def test_main_rejects_bad_port_and_reports_port_in_use(fake: FakeS3, tmp_path: P
     err = capsys.readouterr().err
     assert str(port) in err
     assert "Traceback" not in err
+
+
+# ----- coverage -----
+
+
+def watched_report(running: Running, key: str = KEY_T1, ranges=None, duration=100.0) -> Answer:
+    """Post a watched report and return the answer."""
+    return running.client.post("/api/videos/watched", {"key": key, "ranges": ranges or [], "duration": duration})
+
+
+def coverage_row(running: Running, key: str = KEY_T1) -> Dict[str, Any]:
+    """Return one video's row of the coverage answer."""
+    answer = running.client.get("/api/coverage?prefix=" + urllib.parse.quote(FOLDER_2024, safe=""))
+    assert answer.status == 200, answer.error
+    return next(item for item in answer.json()["videos"] if item["key"] == key)
+
+
+def test_watched_reports_add_up_and_survive_a_restart_of_the_store(running: Running):
+    assert watched_report(running, ranges=[[0, 10]]).json()["watched"]["percent"] == 10
+    summary = watched_report(running, ranges=[[10, 40]]).json()["watched"]
+    assert summary["percent"] == 40
+    assert summary["gaps"] == [[40, 100]]
+    assert json.loads((running.data_dir / "watched.json").read_text(encoding="utf-8"))[KEY_T1]["ranges"] == [[0, 40]]
+
+
+def test_watched_empty_report_only_reads(running: Running):
+    watched_report(running, ranges=[[0, 10]])
+    assert watched_report(running, duration=None).json()["watched"]["watched_seconds"] == 10
+
+
+def test_watched_needs_the_mutation_header(running: Running):
+    answer = running.client.post(
+        "/api/videos/watched", {"key": KEY_T1, "ranges": [], "duration": None}, mutation_header=False
+    )
+    assert answer.status == 403
+
+
+@pytest.mark.parametrize(
+    "body, field",
+    [
+        ({"key": "../secret.mp4", "ranges": [], "duration": None}, "key"),
+        ({"key": KEY_T1, "ranges": "all", "duration": None}, "ranges"),
+        ({"key": KEY_T1, "ranges": [[9, 1]], "duration": None}, "ranges"),
+        ({"key": KEY_T1, "ranges": [], "duration": -5}, "duration"),
+        ({"key": KEY_T1, "ranges": []}, "duration"),
+    ],
+)
+def test_watched_refuses_bad_input_and_saves_nothing(running: Running, body: Dict[str, Any], field: str):
+    answer = running.client.post("/api/videos/watched", body)
+    assert answer.status == 400
+    assert field in answer.error
+    assert not (running.data_dir / "watched.json").exists()
+
+
+def test_watched_corrupt_file_is_an_error_and_stays(running: Running):
+    path = running.data_dir / "watched.json"
+    path.write_text("{broken", encoding="utf-8")
+    assert watched_report(running, ranges=[[0, 1]]).status == 500
+    assert path.read_text(encoding="utf-8") == "{broken"
+
+
+def test_coverage_lists_the_eight_targets_in_guide_order(running: Running):
+    answer = running.client.get("/api/coverage?prefix=" + urllib.parse.quote(FOLDER_2024, safe="")).json()
+    assert [item["code"] for item in answer["species"]] == ["ACAU", "CDEL", "MLAE", "CPLI", "AFUL", "ACRA", "ACOM", "XMUT"]
+    assert answer["has_reference"] is False
+
+
+def test_coverage_counts_labeled_sightings_only(running: Running):
+    save_one(running, species="ACAU")
+    save_one(running, species=None, time=20.0)
+    save_one(running, species="SAUR", time=30.0)
+    row = coverage_row(running)
+    assert row["counts"]["ACAU"] == 1
+    assert sum(row["counts"].values()) == 1
+    assert row["unlabeled"] == 1
+    assert row["reference"] is None
+
+
+def test_coverage_follows_the_species_when_a_pin_moves(running: Running):
+    save_one(running, species="XMUT")
+    settings = running.client.get("/api/species").json()["pins"]
+    settings["8"] = "SAUR"
+    assert running.client.post("/api/settings", {"pins": settings}).status == 200
+    assert coverage_row(running)["counts"]["XMUT"] == 1
+
+
+def test_coverage_reads_the_reference_file(running: Running):
+    name = KEY_T1.rsplit("/", 1)[1]
+    (running.data_dir / "reference_observations.csv").write_text(
+        f"﻿Sponge Type,FileName\nAplysina fulva,{name.upper()}\nAplysina fulva,{name}\nMycale laevis,other.MP4\n",
+        encoding="utf-8",
+    )
+    row = coverage_row(running)
+    assert row["reference"]["AFUL"] == 2
+    assert row["reference"]["MLAE"] == 0
+
+
+def test_coverage_bad_reference_file_is_an_error(running: Running):
+    (running.data_dir / "reference_observations.csv").write_text("Nope\n1\n", encoding="utf-8")
+    answer = running.client.get("/api/coverage?prefix=" + urllib.parse.quote(FOLDER_2024, safe=""))
+    assert answer.status == 500
+    assert "Sponge Type" in answer.error
+
+
+def test_coverage_needs_a_prefix(running: Running):
+    assert running.client.get("/api/coverage").status == 400
+
+
+def test_coverage_reports_watched_time(running: Running):
+    watched_report(running, ranges=[[0, 25]])
+    assert coverage_row(running)["watched"]["percent"] == 25

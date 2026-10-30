@@ -78,12 +78,15 @@ import {
 } from './wheel.js';
 import { createWheel } from './wheel_view.js';
 import { createScrubber } from './scrub.js';
+import { createWatchTracker, gapSentence, targetCell, videoLabel, watchedText } from './coverage.js';
 import { markAt, marksAt, readTrackAnswer } from './track_math.js';
 
 // ------------------------------------------------------------------ constants
 
 const ROOT_PREFIX = 'TCRMP_video_ondeck/';
 const MUTATION_HEADER = 'X-Screener';
+/** How often the page saves the stretches watched while a video plays. */
+const WATCH_SAVE_MS = 5000;
 const JPEG_QUALITY = 0.95;
 const FRAME_STEP_SECONDS = 1 / 30;
 const POLL_MS = 2000;
@@ -198,6 +201,9 @@ const state = {
 
 /** Timers, the live drag, and other values that are not plain page data. */
 const runtime = {
+  watch: createWatchTracker(),
+  watchSavedAt: 0,
+  watchWarned: false,
   loadToken: 0,
   queryEditedAt: -Infinity,
   deleteArmedAt: null,
@@ -259,6 +265,11 @@ const dom = {
   helpToggle: byId('help-toggle'),
   help: byId('help'),
   helpClose: byId('help-close'),
+  coverageToggle: byId('coverage-toggle'),
+  coverage: byId('coverage'),
+  coverageClose: byId('coverage-close'),
+  coverageFolder: byId('coverage-folder'),
+  coverageGrid: byId('coverage-grid'),
   guideToggle: byId('guide-toggle'),
   guide: byId('guide'),
   guideClose: byId('guide-close'),
@@ -909,12 +920,32 @@ function applySettings(data) {
   updateMatches();
 }
 
+/** The color group of each part of the ID guide; other species and empty keys stay gray. */
+const PIN_TIERS = Object.freeze({ 1: 'original', 2: 'added' });
+
+/** What each color group means, for the key's tooltip and screen readers. */
+const PIN_TIER_WORDS = Object.freeze({
+  original: 'Green: one of the original 4 target species, ID guide Part 1.',
+  added: 'Pink: one of the 4 target species added in ID guide Part 2.',
+  other: 'Gray: not one of the 8 target species.',
+});
+
+/**
+ * Name the color group of a pinned species from its part of the ID guide.
+ * @param {?object} species The species on the key, or null for an empty key.
+ * @returns {string} 'original' for Part 1, 'added' for Part 2, 'other' for anything else.
+ */
+function pinTier(species) {
+  return (species && PIN_TIERS[species.part]) || 'other';
+}
+
 /** Draw the ten pinned-species keycaps. */
 function renderPins() {
   const nodes = PIN_KEYS.map((slot) => {
     const code = state.pins[slot] || '';
     const species = speciesByCode(code);
     const name = species ? species.name : '';
+    const tier = pinTier(species);
     const parts = binomialParts(name);
     const nameNodes = parts
       ? [el('span', { class: 'pin-genus', text: `${parts.initial} ` }), parts.epithet]
@@ -922,11 +953,11 @@ function renderPins() {
     const choose = el('button', {
       class: 'pin-choose',
       title: code
-        ? `You save the mark on screen as ${name || code} and the video stays paused. The ${slot} key does the same, and Shift plays on.`
+        ? `You save the mark on screen as ${name || code} and the video stays paused. The ${slot} key does the same, and Shift plays on. ${PIN_TIER_WORDS[tier]}`
         : `Key ${slot} has no species yet. You highlight a species in the filter list, then click the pin in this corner.`,
       attrs: {
         type: 'button',
-        'aria-label': code ? `Key ${slot}: ${code}, ${name}` : `Key ${slot}: empty`,
+        'aria-label': code ? `Key ${slot}: ${code}, ${name}. ${PIN_TIER_WORDS[tier]}` : `Key ${slot}: empty`,
       },
       data: { slot },
     }, [
@@ -943,7 +974,7 @@ function renderPins() {
     return el('div', {
       class: 'pin-slot',
       attrs: { role: 'group' },
-      data: { slot, code },
+      data: { slot, code, tier },
     }, [choose, assign]);
   });
   dom.pins.replaceChildren(...nodes);
@@ -1198,6 +1229,8 @@ async function openVideo(entry, jump = null) {
     endMark();
   }
   savePosition();
+  saveWatched();
+  runtime.watch.breakRun();
   stopVideoTimers();
   runtime.jump = jump;
   runtime.loadToken += 1;
@@ -1515,8 +1548,81 @@ function savePosition() {
   }
 }
 
+/**
+ * Decide whether the picture is in front of the annotator: the tab in view, no card over
+ * the video, and a speed on the speed control. A held arrow key plays faster than any of
+ * them, so a scrub never counts.
+ * @returns {boolean} True when the annotator can be watching the video.
+ */
+function pictureInView() {
+  return Boolean(state.key) && !dom.video.seeking && !document.hidden
+    && dom.coverage.hidden && dom.help.hidden && dom.video.playbackRate <= SPEEDS[SPEEDS.length - 1];
+}
+
+/**
+ * Decide whether this moment counts as watching: forward playback with the picture in view.
+ * @returns {boolean} True when the video is being watched.
+ */
+function countsAsWatching() {
+  return pictureInView() && !dom.video.paused && !dom.video.ended;
+}
+
+/**
+ * Save the stretches watched since the last save. A failed save keeps them for the next
+ * one while the same video is open; any stretch lost shows as unwatched, never as watched.
+ * @param {boolean} [force=false] True asks the server even with nothing new, to read the summary.
+ * @returns {Promise<?object>} The video's watched summary, or null when nothing was asked or the save failed.
+ */
+async function saveWatched(force = false) {
+  const key = state.key;
+  if (!key) {
+    return null;
+  }
+  const ranges = runtime.watch.takeRanges();
+  if (ranges.length === 0 && !force) {
+    return null;
+  }
+  runtime.watchSavedAt = Date.now();
+  const duration = dom.video.duration;
+  const body = { key, ranges, duration: Number.isFinite(duration) && duration > 0 ? duration : null };
+  try {
+    const answer = await request('POST', '/api/videos/watched', body);
+    runtime.watchWarned = false;
+    return answer.watched;
+  } catch (error) {
+    if (key === state.key) {
+      runtime.watch.restore(ranges);
+    }
+    if (!runtime.watchWarned) {
+      runtime.watchWarned = true;
+      toast(`The watched time was not saved. ${endSentence(error.message)}`, 'error');
+    }
+    return null;
+  }
+}
+
+/** Send the last stretches as the page closes, on a request that outlives the page. */
+function saveWatchedOnExit() {
+  const ranges = runtime.watch.takeRanges();
+  if (state.key && ranges.length > 0) {
+    const duration = dom.video.duration;
+    fetch('/api/videos/watched', {
+      method: 'POST',
+      keepalive: true,
+      headers: { [MUTATION_HEADER]: '1', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: state.key, ranges, duration: Number.isFinite(duration) && duration > 0 ? duration : null }),
+    }).catch(() => {
+      // The page is closing, so nobody is left to tell; the stretch shows as unwatched.
+    });
+  }
+}
+
 /** Follow the playhead: the clock, the scrub bar, the saved position, the pending mark. */
 function onTimeUpdate() {
+  runtime.watch.advance(dom.video.currentTime, countsAsWatching());
+  if (Date.now() - runtime.watchSavedAt > WATCH_SAVE_MS) {
+    saveWatched();
+  }
   if (Date.now() - runtime.positionSavedAt > POSITION_SAVE_MS) {
     savePosition();
   }
@@ -1679,12 +1785,59 @@ async function toggleDone() {
   }
   const key = state.key;
   const done = state.videoStatus !== 'done';
+  const name = state.name;
   const later = state.rows.filter((row) => labelStatus(row) === 'unlabeled').length;
   if (done && later > 0) {
     // The server refuses too; the page answers first so the refusal needs no round trip.
     toast(`The done status was not saved. done: this video has ${later} unlabeled point(s). Label or delete them first, because a done video tells OnDeck that missing pinned species are absent.`, 'error');
     return;
   }
+  if (done) {
+    const watched = await saveWatched(true);
+    if (key !== state.key) {
+      return;
+    }
+    const warning = doneWarning(watched);
+    if (warning) {
+      // The cards sit above the toasts, and this toast holds a button.
+      toggleCoverage(false);
+      toggleHelp(false);
+      toast(warning, 'info', ERROR_TOAST_MS, {
+        label: 'Mark done anyway',
+        title: `You mark ${name} done even though parts of it were not watched. Its zero counts then read as absent only if every second was watched.`,
+        run: (event) => {
+          event.currentTarget.closest('.toast').remove();
+          saveDone(key, true);
+        },
+      });
+      return;
+    }
+  }
+  await saveDone(key, done);
+}
+
+/**
+ * Word the warning for a video that is not fully watched.
+ * @param {?object} watched The watched summary, or null when it could not be read.
+ * @returns {string} The warning, or an empty string when the whole video was watched.
+ */
+function doneWarning(watched) {
+  if (!watched) {
+    return 'The app could not read the watched time for this video.';
+  }
+  if (watched.percent === null) {
+    return 'This video has no watched time yet.';
+  }
+  return watched.gaps.length > 0 ? gapSentence(watched.gaps) : '';
+}
+
+/**
+ * Store a video's done status and update the page.
+ * @param {string} key The video's key.
+ * @param {boolean} done True marks it done, false reopens it.
+ * @returns {Promise<void>} Settles after the server stored or refused the change.
+ */
+async function saveDone(key, done) {
   try {
     const answer = await request('POST', '/api/videos/done', { key, done });
     const status = answer.video && answer.video.Status === 'done' ? 'done' : 'in progress';
@@ -3602,6 +3755,127 @@ function closeGuideLarge() {
 }
 
 /**
+ * Open or close the coverage panel. Opening reads the folder on screen again.
+ * @param {boolean} [open] True opens, false closes, and no value flips the panel.
+ * @returns {Promise<void>} Settles after the panel shows the grid or the error.
+ */
+async function toggleCoverage(open) {
+  const show = open === undefined ? dom.coverage.hidden : open;
+  dom.coverage.hidden = !show;
+  dom.coverageToggle.setAttribute('aria-expanded', String(show));
+  if (!show) {
+    return;
+  }
+  await saveWatched();
+  dom.coverageFolder.textContent = state.prefix;
+  try {
+    const page = await request('GET', `/api/coverage?prefix=${encodeURIComponent(state.prefix)}`);
+    renderCoverage(page);
+  } catch (error) {
+    dom.coverageGrid.replaceChildren(el('p', { class: 'empty', text: `The coverage did not load. ${endSentence(error.message)}` }));
+  }
+}
+
+/**
+ * Draw one row of species counts, with the January count under each.
+ * @param {object} page The /api/coverage answer.
+ * @param {object} video One video of the answer.
+ * @returns {HTMLElement} The table row.
+ */
+function coverageRow(page, video) {
+  const entry = videoEntry(video.key);
+  const name = entry
+    ? el('button', {
+      class: 'coverage-open',
+      text: videoLabel(video.name),
+      title: `You open ${video.name}.`,
+      attrs: { type: 'button' },
+    })
+    : el('span', { text: videoLabel(video.name), title: video.name });
+  if (entry) {
+    name.addEventListener('click', () => {
+      toggleCoverage(false);
+      openVideo(entry);
+    });
+  }
+  const cells = page.species.map((species) => {
+    const earlier = video.reference ? video.reference[species.code] : null;
+    const cell = targetCell(video.counts[species.code], earlier, video.watched, video.status === 'done');
+    return el('td', {
+      class: 'coverage-cell',
+      title: `${species.name}. ${cell.title}`,
+      data: { state: cell.state },
+    }, [
+      el('span', { class: 'coverage-count', text: cell.text }),
+      el('span', { class: 'coverage-reference', text: cell.reference }),
+    ]);
+  });
+  const gaps = video.watched.gaps.length > 0 ? gapSentence(video.watched.gaps) : 'You watched the whole video.';
+  return el('tr', { data: { key: video.key } }, [
+    el('th', { attrs: { scope: 'row' } }, [name]),
+    ...cells,
+    el('td', {
+      class: 'coverage-watched',
+      text: watchedText(video.watched),
+      title: video.watched.percent === null ? 'No watched time is saved for this video. Viewing from before this feature was not recorded.' : gaps,
+      data: { complete: String(video.watched.percent === 100) },
+    }),
+    el('td', { class: 'coverage-number', text: String(video.unlabeled), title: 'Points in this video that still need a species.' }),
+    el('td', { class: 'coverage-status', text: video.status, title: 'The screening status of this video.' }),
+  ]);
+}
+
+/**
+ * Draw the coverage grid.
+ * @param {object} page The /api/coverage answer.
+ */
+function renderCoverage(page) {
+  if (page.videos.length === 0) {
+    dom.coverageGrid.replaceChildren(el('p', { class: 'empty', text: 'This folder shows no videos. Open a folder with videos first.' }));
+    return;
+  }
+  const headers = page.species.map((species) => el('th', {
+    class: 'coverage-species',
+    text: species.code,
+    title: `${species.name}. ${PIN_TIER_WORDS[pinTier(species)]}`,
+    attrs: { scope: 'col' },
+    data: { tier: pinTier(species) },
+  }));
+  const totals = page.species.map((species) => {
+    const count = page.videos.reduce((sum, video) => sum + video.counts[species.code], 0);
+    const earlier = page.has_reference
+      ? `J${page.videos.reduce((sum, video) => sum + video.reference[species.code], 0)}`
+      : '';
+    return el('td', { class: 'coverage-cell', title: `${species.name}, all videos in this folder.` }, [
+      el('span', { class: 'coverage-count', text: String(count) }),
+      el('span', { class: 'coverage-reference', text: earlier }),
+    ]);
+  });
+  const finished = page.videos.filter((video) => video.status === 'done').length;
+  const table = el('table', { class: 'coverage-table' }, [
+    el('thead', {}, [el('tr', {}, [
+      el('th', { text: 'Video', attrs: { scope: 'col' } }),
+      ...headers,
+      el('th', { text: 'Watched', attrs: { scope: 'col' } }),
+      el('th', { text: 'To label', attrs: { scope: 'col' } }),
+      el('th', { text: 'Status', attrs: { scope: 'col' } }),
+    ])]),
+    el('tbody', {}, page.videos.map((video) => coverageRow(page, video))),
+    el('tfoot', {}, [el('tr', {}, [
+      el('th', { text: 'All', attrs: { scope: 'row' } }),
+      ...totals,
+      el('td', {}),
+      el('td', { class: 'coverage-number', text: String(page.videos.reduce((sum, video) => sum + video.unlabeled, 0)) }),
+      el('td', { class: 'coverage-status', text: `${finished} of ${page.videos.length} done` }),
+    ])]),
+  ]);
+  const legend = page.has_reference
+    ? 'J is the January count. Amber: January logged it and nothing is tagged yet. A cell reads none only after the whole video is watched and marked done.'
+    : 'A cell reads none only after the whole video is watched and marked done.';
+  dom.coverageGrid.replaceChildren(table, el('p', { class: 'help-note', text: legend }));
+}
+
+/**
  * Open or close the shortcuts card.
  * @param {boolean} [open] True opens, false closes, and no value flips the card.
  */
@@ -3688,6 +3962,10 @@ function onKeyDown(event) {
     toggleGuide(false);
     event.preventDefault();
     return;
+  }
+  if (key === 'Escape' && !dom.coverage.hidden) {
+    toggleCoverage(false);
+    return true;
   }
   if (key === 'Escape' && !dom.help.hidden) {
     toggleHelp(false);
@@ -4031,6 +4309,7 @@ function wireEvents() {
   });
   window.addEventListener('blur', abandonDrag);
   window.addEventListener('pagehide', savePosition);
+  window.addEventListener('pagehide', saveWatchedOnExit);
   window.addEventListener('beforeunload', onBeforeUnload);
 
   dom.breadcrumb.addEventListener('click', onFolderClick);
@@ -4079,6 +4358,15 @@ function wireEvents() {
   }
   dom.video.addEventListener('emptied', renderMarkBar);
   dom.video.addEventListener('pause', savePosition);
+  dom.video.addEventListener('seeking', () => runtime.watch.breakRun());
+  for (const name of ['pause', 'ended']) {
+    dom.video.addEventListener(name, () => {
+      // The last reading came a moment before the stop; this one closes that stretch.
+      runtime.watch.advance(dom.video.currentTime, pictureInView());
+      runtime.watch.breakRun();
+      saveWatched();
+    });
+  }
 
   dom.play.addEventListener('click', togglePlay);
   dom.scrub.addEventListener('pointerdown', () => {
@@ -4121,6 +4409,8 @@ function wireEvents() {
   dom.toLabel.addEventListener('click', onToLabelClick);
   dom.annotator.addEventListener('change', saveAnnotator);
   dom.exportButton.addEventListener('click', exportPackage);
+  dom.coverageToggle.addEventListener('click', () => toggleCoverage());
+  dom.coverageClose.addEventListener('click', () => toggleCoverage(false));
   dom.helpToggle.addEventListener('click', () => toggleHelp());
   dom.helpClose.addEventListener('click', () => toggleHelp(false));
   dom.guideToggle.addEventListener('click', () => toggleGuide());
