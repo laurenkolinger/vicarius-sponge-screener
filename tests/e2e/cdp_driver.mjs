@@ -1611,6 +1611,26 @@ const SCENARIOS = {
     s.fact('afterButton', await readDeck(s));
   },
 
+  /** Type a new genus in the wheel, confirm it, and find it again after a reload. */
+  async add_genus(s, config) {
+    await loadApp(s);
+    await openVideo(s, config, config.key2024);
+    await s.evaluate('window.confirm = (text) => { window.__confirmed = text; return true; }');
+    s.step('click, then type cinachyrella and press Enter');
+    await clickPicture(s, 0.30, 0.40);
+    await waitWheel(s, 'new');
+    for (const letter of 'cinachyrella') {
+      await s.key(letter);
+    }
+    s.fact('readout', await s.evaluate(`document.querySelector('#wheel .wheel-readout').textContent`));
+    await s.key('Enter');
+    s.fact('rows', await waitRows(s, 1));
+    s.fact('confirmed', await s.evaluate('window.__confirmed'));
+    s.step('reload and look for it');
+    await reloadApp(s, 'the page after adding a genus');
+    s.fact('afterReload', await s.evaluate(`${S}.state.species.filter((item) => item.code === 'CINA').map((item) => item.name)`));
+  },
+
   /** Type a species' old name in the wheel and pick what it finds with Enter. */
   async old_name_search(s, config) {
     await loadApp(s);
@@ -1624,6 +1644,25 @@ const SCENARIOS = {
     s.fact('typed', await s.evaluate(`${S}.wheel().query`));
     await s.key('Enter');
     s.fact('rows', await waitRows(s, 1));
+  },
+
+  /** Save a sighting, click Export, and let Chrome download the zip. */
+  async export_download(s, config) {
+    await loadApp(s);
+    await s.call('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: path.resolve(OUT_DIR) });
+    await openVideo(s, config, config.key2024);
+    s.step('save a sighting');
+    await clickPicture(s, 0.30, 0.40);
+    await waitWheel(s, 'new');
+    await s.key('1');
+    await waitRows(s, 1);
+    s.step('click Export');
+    await clickElement(s, '#export');
+    await s.waitFor(`${S}.state.lastToast && ${S}.state.lastToast.message.startsWith('Downloading ')`, 'the download to start');
+    s.fact('toast', await s.evaluate(`${S}.state.lastToast.message`));
+    s.fact('stillOnPage', await s.evaluate(`document.getElementById('export').disabled === false && location.pathname`));
+    s.fact('seal', await s.evaluate(`(() => { const img = document.querySelector('.brand-seal'); const box = img.getBoundingClientRect(); return { loaded: img.naturalWidth > 0, left: box.left, top: box.top, width: box.width }; })()`));
+    await sleep(LAYOUT_SETTLE_MS * 2);
   },
 
   /** Play part of a clip and read the coverage grid. */

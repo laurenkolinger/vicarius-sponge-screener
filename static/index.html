@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sponge Lab by VICAR</title>
-  <link rel="icon" href="data:,">
+  <link rel="icon" type="image/png" href="/static/vicar-seal.png">
   <link rel="stylesheet" href="/static/style.css">
   <script type="module" src="/static/app.js"></script>
 </head>
@@ -32,7 +32,7 @@
 
   <header class="topbar">
     <div class="brand">
-      <span class="brand-mark" aria-hidden="true"></span>
+      <img class="brand-seal" src="/static/vicar-seal.png" alt="VICAR seal" width="32" height="32">
       <h1 class="brand-name">Sponge Lab by VICAR</h1>
     </div>
     <p id="current-video" class="current-video" title="The video that is open now.">No video open</p>
@@ -45,7 +45,7 @@
       <button id="coverage-toggle" type="button" class="button" aria-expanded="false" aria-controls="coverage"
               title="You open the coverage grid: the 8 target species in every video of this folder, the January counts, and how much of each video you watched.">Coverage</button>
       <button id="export" type="button" class="button"
-              title="You export the ground-truth package. The server copies both tables and every frame and crop into a dated folder inside the OnDeck Drive folder.">Export</button>
+              title="You download one zip with the tables, frames, and crops.">Export</button>
       <button id="guide-toggle" type="button" class="button" aria-expanded="false" aria-controls="guide"
               title="You open the species guide: reference photos and the ID guide description for a species. The I key opens and closes it too.">Guide</button>
       <button id="help-toggle" type="button" class="button button-icon" aria-label="Keyboard shortcuts" aria-expanded="false" aria-controls="help"

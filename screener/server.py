@@ -15,12 +15,14 @@ import csv
 import json
 import os
 import re
+import shutil
 import socket
 import sys
 import threading
 import time
 import traceback
 import urllib.parse
+import zipfile
 from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -28,6 +30,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from screener.config import KEY_PREFIX, MAX_BODY_BYTES, PLAYABLE_EXTENSIONS, TALLY_TARGET, TRACK_PYTHON, TRACK_WORKER, VERSION
 from screener.convert import Converter, ConvertError, ConvertStatus
+from screener.custom_species import add_to_guide, clean_name, load_custom_species, new_code, save_custom_species
 from screener.export import ExportError, export_package
 from screener.keys import extension_of, quote_key, validate_key
 from screener.names import load_site_names
@@ -48,6 +51,13 @@ from screener.tracking import Tracker
 
 # Files inside the config, data, and cache folders.
 SPECIES_FILE = "species.csv"
+EXPORT_FOLDER = "exports"
+EXPORT_BUILD_FOLDER = "building"
+EXPORT_DOWNLOAD_ROUTE = "/api/export/download"
+EXPORT_ARCHIVE_SUFFIX = ".zip"
+EXPORT_ARCHIVE_TYPE = "application/zip"
+# Images are already compressed, so zipping them again only costs time.
+EXPORT_STORED_SUFFIXES = (".jpg", ".jpeg", ".png")
 NAME_CHANGES_FILE = "species_name_changes.csv"
 SITES_FILE = "sites.csv"
 SETTINGS_FILE = "settings.json"
@@ -319,9 +329,13 @@ class ScreenerApp:
         self.port = port
         self._species: List[Species] = load_species(Path(config_dir) / SPECIES_FILE)
         self._name_changes = load_name_changes(Path(config_dir) / NAME_CHANGES_FILE)
+        self._added_species = load_custom_species(self.data_dir, [item.code for item in self._species])
+        self._species.extend(self._added_species)
         site_names = load_site_names(Path(config_dir) / SITES_FILE)
         self.store = ObservationStore(self.data_dir, self._species, site_names)
         self.watch = WatchStore(self.data_dir / WATCHED_FILE)
+        self._export_dir = self.cache_dir / EXPORT_FOLDER
+        self._export_lock = threading.Lock()
         self._settings_path = self.data_dir / SETTINGS_FILE
         self._settings_lock = threading.Lock()
         self._settings = load_settings(self._settings_path, self._species)
@@ -396,6 +410,32 @@ class ScreenerApp:
             "annotator": current.annotator,
             "tally_target": TALLY_TARGET,
         }
+
+    def add_species(self, fields: Any) -> Dict[str, Any]:
+        """Add a genus or species to the list, or find it when it is already there.
+
+        Args:
+            fields: A JSON object with ``name``.
+
+        Returns:
+            The species payload plus ``code``, the code of the named species.
+
+        Raises:
+            ValueError: Starting with ``name`` for a name that cannot be used.
+            OSError: When the list or the guide cannot be written.
+        """
+        name = clean_name(fields.get("name"))
+        with self._settings_lock:
+            known = next((item for item in self._species if item.name.casefold() == name.casefold()), None)
+            if known is None:
+                known = Species(code=new_code(name, [item.code for item in self._species]), name=name, part="", default_pin="")
+                # The guide comes first: a guide that cannot take it leaves the list unchanged.
+                add_to_guide(self.data_dir, known)
+                save_custom_species(self.data_dir, [*self._added_species, known])
+                self._added_species.append(known)
+                self._species.append(known)
+                self.store.add_species(known)
+        return {**self.species_payload(), "code": known.code}
 
     def update_settings(self, fields: Any) -> Dict[str, Any]:
         """Change the annotator or the pins and save settings.json.
@@ -798,22 +838,76 @@ class ScreenerApp:
     # ----- export -----
 
     def export(self) -> Dict[str, Any]:
-        """Write the dated export package into the export folder from the settings.
+        """Write the dated export package as one zip, ready for the browser to download.
+
+        The zip takes its place only when it is whole, so a failed export leaves the
+        previous one and a download never sees a partial file. Only the newest stays.
 
         Returns:
-            ``{"path": <package folder>, "observations": <rows exported>,
-            "unlabeled_left_out": <Later points the package leaves out>}``.
+            ``{"url": <download address>, "name": <zip file name>, "observations": <rows
+            exported>, "unlabeled_left_out": <review points the package leaves out>}``.
 
         Raises:
-            ExportError: When the export folder is missing, the store has no
-                labeled sighting, an image is missing, or a file cannot be written.
+            ExportError: When the store has no labeled sighting, an image is missing, or
+                a file cannot be written.
         """
-        result = export_package(self.store, Path(self.settings().export_root), date.today())
+        with self._export_lock:
+            building = self._export_dir / EXPORT_BUILD_FOLDER
+            try:
+                shutil.rmtree(building, ignore_errors=True)
+                building.mkdir(parents=True)
+                result = export_package(self.store, building, date.today())
+                observations = _count_csv_rows(result.path / self.store.observations_path.name)
+                built = _zip_package(result.path)
+                archive = self._export_dir / built.name
+                for older in self._export_dir.glob(f"*{EXPORT_ARCHIVE_SUFFIX}"):
+                    if older != archive:
+                        older.unlink()
+                os.replace(built, archive)
+            except OSError as error:
+                raise ExportError(f"export: the export folder cannot be written: {error}") from error
+            finally:
+                shutil.rmtree(building, ignore_errors=True)
         return {
-            "path": str(result.path),
-            "observations": _count_csv_rows(result.path / self.store.observations_path.name),
+            "url": EXPORT_DOWNLOAD_ROUTE,
+            "name": archive.name,
+            "observations": observations,
             "unlabeled_left_out": result.unlabeled_left_out,
         }
+
+    def export_archive(self) -> Path:
+        """Return the newest export zip.
+
+        Raises:
+            HttpError: 404 when no export has been made since the app last cleared them.
+        """
+        archives = sorted(self._export_dir.glob(f"*{EXPORT_ARCHIVE_SUFFIX}"))
+        if not archives:
+            raise HttpError(HTTP_NOT_FOUND, "export: no export is ready. Click Export first.")
+        return archives[-1]
+
+
+def _zip_package(folder: Path) -> Path:
+    """Pack a package folder into one zip beside it.
+
+    Args:
+        folder: The package folder.
+
+    Returns:
+        The zip, named after the folder, with the folder at its top level.
+
+    Raises:
+        ExportError: When the zip cannot be written.
+    """
+    archive = folder.with_name(folder.name + EXPORT_ARCHIVE_SUFFIX)
+    try:
+        with zipfile.ZipFile(archive, "w", allowZip64=True) as output:
+            for path in sorted(item for item in folder.rglob("*") if item.is_file()):
+                method = zipfile.ZIP_STORED if path.suffix.lower() in EXPORT_STORED_SUFFIXES else zipfile.ZIP_DEFLATED
+                output.write(path, Path(folder.name) / path.relative_to(folder), compress_type=method)
+    except OSError as error:
+        raise ExportError(f"zip: {archive.name} could not be written: {error}") from error
+    return archive
 
 
 class _ScreenerServer(ThreadingHTTPServer):
@@ -859,12 +953,13 @@ class _Handler(BaseHTTPRequestHandler):
     _body_consumed = False
     _sent_bytes: Optional[int] = None
     _note = ""
+    _download_name: Optional[str] = None
 
     EXACT_ROUTES: Dict[str, Dict[str, str]] = {
         "/": {"GET": "_get_index"},
         "/api/health": {"GET": "_get_health"},
         "/api/catalog": {"GET": "_get_catalog"},
-        "/api/species": {"GET": "_get_species"},
+        "/api/species": {"GET": "_get_species", "POST": "_post_species"},
         "/api/settings": {"POST": "_post_settings"},
         "/api/observations": {"GET": "_get_observations", "POST": "_post_observation"},
         "/api/tally": {"GET": "_get_tally"},
@@ -876,6 +971,7 @@ class _Handler(BaseHTTPRequestHandler):
         "/api/convert": {"GET": "_get_convert", "POST": "_post_convert"},
         "/api/prefetch": {"GET": "_get_prefetch", "POST": "_post_prefetch"},
         "/api/export": {"POST": "_post_export"},
+        EXPORT_DOWNLOAD_ROUTE: {"GET": "_get_export_download"},
         "/video": {"GET": "_get_video"},
     }
     PREFIX_ROUTES: Tuple[Tuple[str, Dict[str, str]], ...] = (
@@ -1240,6 +1336,8 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         if cache_control is not None:
             self.send_header("Cache-Control", cache_control)
+        if self._download_name:
+            self.send_header("Content-Disposition", f'attachment; filename="{self._download_name}"')
         self.end_headers()
 
     def _parse_range(self, range_header: Optional[str], size: int) -> Tuple[int, int]:
@@ -1376,6 +1474,10 @@ class _Handler(BaseHTTPRequestHandler):
         """Answer the species list, the pins, the annotator, and the tally target."""
         self._send_json(HTTP_OK, self.server.app.species_payload())
 
+    def _post_species(self, rest: str, query: Dict[str, List[str]]) -> None:
+        """Add a genus or species."""
+        self._send_json(HTTP_OK, self.server.app.add_species(self._object_body()))
+
     def _post_settings(self, rest: str, query: Dict[str, List[str]]) -> None:
         """Change the annotator or the pins."""
         app = self.server.app
@@ -1462,6 +1564,16 @@ class _Handler(BaseHTTPRequestHandler):
         """Write the export package."""
         self._object_body()
         self._send_json(HTTP_OK, self.server.app.export())
+
+    def _get_export_download(self, rest: str, query: Dict[str, List[str]]) -> None:
+        """Send the newest export zip as a download, resumable by the browser."""
+        archive = self.server.app.export_archive()
+        # One connection carries many requests, so the name applies to this answer alone.
+        self._download_name = archive.name
+        try:
+            self._send_file(archive, EXPORT_ARCHIVE_TYPE, self.headers.get("Range"), True, NO_CACHE)
+        finally:
+            self._download_name = None
 
     def _get_video(self, rest: str, query: Dict[str, List[str]]) -> None:
         """Stream a video from the relay, or a converted copy from disk."""

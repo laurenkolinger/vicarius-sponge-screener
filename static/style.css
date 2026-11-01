@@ -305,13 +305,10 @@ kbd {
   flex: none;
 }
 
-/* The brand mark is the marker itself: a magenta ring with a white outline. */
-.brand-mark {
-  width: 15px;
-  height: 15px;
-  border-radius: 50%;
-  border: 3px solid var(--mark);
-  box-shadow: 0 0 0 1.5px #ffffff, inset 0 0 0 1.5px #ffffff;
+.brand-seal {
+  display: block;
+  width: 32px;
+  height: 32px;
 }
 
 .brand-name {
@@ -539,6 +536,10 @@ kbd {
   color: var(--text-3);
   font-size: 13px;
   white-space: nowrap;
+}
+
+.match-add {
+  width: 100%;
 }
 
 .match-was {

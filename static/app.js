@@ -1070,6 +1070,29 @@ function updateMatches() {
   renderMatches();
 }
 
+/**
+ * Add a genus or species to the list after the annotator confirms it.
+ * @param {string} typed The name as typed.
+ * @returns {Promise<?string>} The species code, or null when cancelled or refused.
+ */
+async function addTaxon(typed) {
+  const name = typed.trim().replace(/^./, (letter) => letter.toUpperCase());
+  if (!window.confirm(`Add ${name} to the species list?`)) {
+    return null;
+  }
+  try {
+    const answer = await request('POST', '/api/species', { name });
+    applySettings(answer);
+    guide.data = null;
+    loadGuide();
+    toast(`Added ${answer.code} ${speciesByCode(answer.code).name}`);
+    return answer.code;
+  } catch (error) {
+    toast(`${name} was not added. ${endSentence(error.message)}`, 'error');
+    return null;
+  }
+}
+
 /** Draw the list of matching species above the filter box. It shows while the box has focus. */
 function renderMatches() {
   dom.matches.hidden = !state.filterOpen;
@@ -1083,10 +1106,15 @@ function renderMatches() {
   }
   if (state.matches.length === 0) {
     dom.filter.removeAttribute('aria-activedescendant');
-    dom.matches.replaceChildren(el('li', {
-      class: 'match-empty',
-      text: `No species matches "${state.filterQuery.trim()}". Backspace to edit.`,
-    }));
+    const typed = state.filterQuery.trim();
+    const add = el('button', {
+      class: 'button match-add',
+      text: `Add ${typed}`,
+      title: `You add ${typed} to the species list.`,
+      attrs: { type: 'button' },
+    });
+    add.addEventListener('click', () => addTaxon(typed).then(updateMatches));
+    dom.matches.replaceChildren(el('li', { class: 'match-empty' }, [add]));
     return;
   }
   const pinOf = new Map(PIN_KEYS.filter((slot) => state.pins[slot]).map((slot) => [state.pins[slot], slot]));
@@ -3484,8 +3512,13 @@ async function saveAnnotator() {
  */
 async function exportPackage() {
   dom.exportButton.disabled = true;
+  toast('Preparing the export.', 'info', LONG_TOAST_MS);
   try {
     const answer = await request('POST', '/api/export', {});
+    const link = el('a', { attrs: { href: answer.url, download: answer.name } });
+    document.body.append(link);
+    link.click();
+    link.remove();
     toast(exportSummary(answer), 'ok', LONG_TOAST_MS);
   } catch (error) {
     toast(`The export failed. ${endSentence(error.message)}`, 'error', LONG_TOAST_MS);
@@ -3630,9 +3663,14 @@ function renderGuide() {
     dom.guideText.textContent = 'Loading the guide.';
     return;
   }
-  const item = guide.data.find((entry) => entry.code === guide.code) || guide.data[0];
+  const item = guide.code
+    ? guide.data.find((entry) => entry.code === guide.code)
+    : guide.data[0];
   if (!item) {
-    dom.guideText.textContent = 'The guide holds no species.';
+    const named = speciesByCode(guide.code);
+    dom.guideNotice.hidden = true;
+    dom.guideCount.textContent = '';
+    dom.guideText.textContent = named ? `${named.name} has no guide entry.` : 'The guide holds no species.';
     return;
   }
   guide.code = item.code;
@@ -3974,7 +4012,7 @@ function onTextFieldEnter(field, shift, repeat) {
   if (field === dom.filter && state.filterQuery.trim() !== '') {
     const code = state.matches[state.matchIndex];
     if (!code) {
-      toast(`No species matches "${state.filterQuery.trim()}".`, 'error', TOAST_MS);
+      addTaxon(state.filterQuery).then(updateMatches);
     } else if (marking && !repeat) {
       pickSpecies(code, shift);
     } else if (!marking) {
@@ -4035,7 +4073,14 @@ function onMarkingKey(event, key) {
   const open = wheel.snapshot();
   const query = open ? open.query : '';
   if (key === 'Enter') {
-    if (!event.repeat) {
+    if (!event.repeat && query.trim() && filterSpecies(state.species, query).length === 0) {
+      const mark = state.pending;
+      addTaxon(query).then((code) => {
+        if (code && wheel.isOpen() && state.pending === mark) {
+          pickSpecies(code, event.shiftKey);
+        }
+      });
+    } else if (!event.repeat) {
       wheel.pickHighlighted(event.shiftKey);
     }
     return true;

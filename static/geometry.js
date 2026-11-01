@@ -993,16 +993,14 @@ export function sightingsCount(rows) {
  *   answer of POST /api/export.
  * @returns {string} How many sightings the package holds, how many Later points it left
  *   out when there are any, and the folder last in a sentence of its own, with no period
- *   after the path so it can be copied whole.
  */
 export function exportSummary(answer) {
   const count = Number(answer.observations) || 0;
   const left = Number(answer.unlabeled_left_out) || 0;
-  const parts = [`Exported ${count} ${count === 1 ? 'sighting' : 'sightings'}.`];
+  const parts = [`Downloading ${answer.name}: ${count} ${count === 1 ? 'sighting' : 'sightings'}.`];
   if (left > 0) {
     parts.push(`${left} review ${left === 1 ? 'point' : 'points'} left out.`);
   }
-  parts.push(`Folder: ${answer.path}`);
   return parts.join(' ');
 }
 

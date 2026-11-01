@@ -494,7 +494,7 @@ export function createWheel(layer, handlers) {
         parts.push(span('wheel-readout-key', `key ${view.pinOf.get(target.code)}`));
       }
     } else if (filtering()) {
-      parts.push(span('wheel-readout-hint', 'No species matches. Backspace edits.'));
+      parts.push(span('wheel-readout-hint', `Nothing matches. Enter adds ${view.query.trim()}. Backspace edits.`));
     } else {
       parts.push(span('wheel-readout-hint', restingText(view.mode, view.rowId, view.current, view.hubLabel)));
     }

@@ -27,6 +27,7 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tuple
 
@@ -739,11 +740,38 @@ def test_shift_digit_plays_on(drive: Callable[[str], Dict[str, Any]], app: Runni
         assert_images(app, row, row["SpeciesCode"], SUFFIX_2024)
 
 
+def test_add_genus(drive: Callable[[str], Dict[str, Any]]) -> None:
+    """A genus typed in the wheel joins the list after a confirmation, tags the mark, and survives a reload."""
+    facts = drive("add_genus")["facts"]
+    assert "Enter adds cinachyrella" in facts["readout"]
+    assert facts["confirmed"] == "Add Cinachyrella to the species list?"
+    assert facts["rows"][0]["SpeciesCode"] == "CINA"
+    assert facts["afterReload"] == ["Cinachyrella"]
+
+
 def test_old_name_search(drive: Callable[[str], Dict[str, Any]]) -> None:
     """Typing a species' earlier name in the wheel finds it under its current name."""
     facts = drive("old_name_search")["facts"]
     assert facts["typed"] == "compressa"
     assert facts["rows"][0]["SpeciesCode"] == "ACOM"
+
+
+def test_export_download(drive: Callable[[str], Dict[str, Any]]) -> None:
+    """Export puts one zip in the browser's downloads and leaves the page where it was; the seal sits top left."""
+    for old in OUT_DIR.glob("spongeGroundTruth_*"):
+        old.unlink()
+    facts = drive("export_download")["facts"]
+    assert facts["toast"].startswith("Downloading spongeGroundTruth_")
+    assert facts["stillOnPage"] == "/"
+    assert facts["seal"]["loaded"] is True and facts["seal"]["left"] < 30 and facts["seal"]["top"] < 15 and facts["seal"]["width"] == 32
+    downloads = list(OUT_DIR.glob("spongeGroundTruth_*.zip"))
+    assert len(downloads) == 1, downloads
+    with zipfile.ZipFile(downloads[0]) as opened:
+        assert opened.testzip() is None
+        names = opened.namelist()
+    assert any(name.endswith("/observations.csv") for name in names)
+    assert any("/frames/" in name for name in names) and any("/crops/" in name for name in names)
+    downloads[0].unlink()
 
 
 def test_coverage_grid(drive: Callable[[str], Dict[str, Any]]) -> None:

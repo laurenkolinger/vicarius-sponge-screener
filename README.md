@@ -205,6 +205,10 @@ at zero.
 To show the January counts, copy the January `observations.csv` to
 `data/reference_observations.csv`.
 
+## Add a genus or species
+
+Type the name in the wheel or the filter box. When nothing matches, press Enter, or click **Add** in the filter box, then confirm. A name with a hyphen or a period goes in the filter box, because the wheel does not take those keys. The name joins the list as Phase 3 with a code such as CINA, and stays in `custom_species.csv` in the data folder. Delete its row there to remove it.
+
 ## Species names
 
 `config/species.csv` holds current names. When a name changes, keep the code and add
@@ -233,16 +237,15 @@ same time.
   key and time.
 - `data/watched.json`: the watched stretches of each video, in seconds. Export
   leaves this file out.
-- `data/settings.json`: annotator initials, pinned species, export folder.
+- `data/settings.json`: annotator initials and pinned species.
 - `cache/`: video chunks (capped at 60 GB, oldest removed first), converted
   files, and the bucket listing.
-- Export writes `spongeGroundTruth_<date>/` into the export folder with
+- Export downloads `spongeGroundTruth_<date>.zip` through the browser, with
   `observations.csv`, `videos_screened.csv`, `tracks.csv` (one row per track
   point of each labeled sighting: ID, SpeciesCode, TimeSeconds, X, Y, the box
   centered on X and Y for a box sighting, and Score), every referenced image,
   and a README with counts and column definitions. It leaves Review points out, and its README states how many it
-  left out. The export folder defaults to `exports/` here; set `export_root` in
-  `data/settings.json` to write straight into a synced Drive folder.
+  left out.
 
 ## Configuration
 

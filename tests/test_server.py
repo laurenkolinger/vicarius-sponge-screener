@@ -20,7 +20,9 @@ import subprocess
 import sys
 import threading
 import time
+import tempfile
 import urllib.parse
+import zipfile
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -30,6 +32,7 @@ import pytest
 from screener import config
 from screener import relay as relay_module
 from screener.keys import cache_id, quote_key
+from screener import server as server_module
 from screener.server import ScreenerApp, make_server
 from tests.fakes3 import FakeS3
 
@@ -1748,6 +1751,28 @@ def test_prefetch_routes(running: Running, fake: FakeS3):
 # ----- export -----
 
 
+def unzip_export(running: Running, body: Dict[str, Any]) -> Path:
+    """Download an export the way the browser does, and unpack it.
+
+    Args:
+        running: The running app.
+        body: The answer of POST /api/export.
+
+    Returns:
+        The package folder.
+    """
+    answer = running.client.get(body["url"])
+    assert answer.status == 200, answer.error
+    assert answer.headers["Content-Disposition"] == f'attachment; filename="{body["name"]}"'
+    folder = Path(tempfile.mkdtemp())
+    archive = folder / body["name"]
+    archive.write_bytes(answer.body)
+    with zipfile.ZipFile(archive) as opened:
+        assert opened.testzip() is None
+        opened.extractall(folder)
+    return folder / archive.stem
+
+
 def test_export_route_writes_package(make_app, tmp_path: Path):
     """Export writes the dated package into the folder from settings.json and counts the rows."""
     export_root = tmp_path / "exports"
@@ -1762,8 +1787,9 @@ def test_export_route_writes_package(make_app, tmp_path: Path):
     row = save_one(running)
     answer = running.client.post("/api/export", {})
     assert answer.status == 200, answer.body
-    package = Path(answer.json()["path"])
-    assert package == export_root / ("spongeGroundTruth_" + date.today().strftime("%Y%m%d"))
+    package = unzip_export(running, answer.json())
+    assert package.name == "spongeGroundTruth_" + date.today().strftime("%Y%m%d")
+    assert answer.json()["name"] == package.name + ".zip"
     assert answer.json()["observations"] == 1
     assert (package / "observations.csv").is_file()
     assert (package / "videos_screened.csv").is_file()
@@ -1773,7 +1799,8 @@ def test_export_route_writes_package(make_app, tmp_path: Path):
 
     second = running.client.post("/api/export", {})
     assert second.status == 200
-    assert Path(second.json()["path"]).name == package.name + "_2"
+    assert second.json()["name"] == package.name + ".zip"
+    assert len(list((running.cache_dir / "exports").iterdir())) == 1
 
 
 def test_export_answer_reports_unlabeled_left_out(make_app, tmp_path: Path):
@@ -1787,10 +1814,10 @@ def test_export_answer_reports_unlabeled_left_out(make_app, tmp_path: Path):
     answer = running.client.post("/api/export", {})
     assert answer.status == 200, answer.body
     body = answer.json()
-    assert set(body) == {"path", "observations", "unlabeled_left_out"}
+    assert set(body) == {"url", "name", "observations", "unlabeled_left_out"}
     assert body["observations"] == 1
     assert body["unlabeled_left_out"] == 2
-    package = Path(body["path"])
+    package = unzip_export(running, body)
     assert sorted(path.name for path in (package / "frames").iterdir()) == [labeled["FrameFileName"]]
     assert sorted(path.name for path in (package / "crops").iterdir()) == [labeled["CropFileName"]]
     for row in (later_one, later_two):
@@ -1826,7 +1853,7 @@ def test_export_left_out_count_comes_from_the_exported_snapshot(make_app, tmp_pa
     monkeypatch.undo()
     assert state["saved_elsewhere"] is True
     assert (body["observations"], body["unlabeled_left_out"]) == (1, 1)
-    assert "- Unlabeled points left out: 1" in (Path(body["path"]) / "README.md").read_text(encoding="utf-8")
+    assert "- Unlabeled points left out: 1" in (unzip_export(running, body) / "README.md").read_text(encoding="utf-8")
     assert running.client.post("/api/export", {}).json()["unlabeled_left_out"] == 2
 
 
@@ -1854,8 +1881,8 @@ def test_export_route_writes_tracks_csv_for_labeled_sightings(make_app, tmp_path
     save_track_in_process(running, later)
     answer = running.client.post("/api/export", {})
     assert answer.status == 200, answer.body
-    assert set(answer.json()) == {"path", "observations", "unlabeled_left_out"}
-    package = Path(answer.json()["path"])
+    assert set(answer.json()) == {"url", "name", "observations", "unlabeled_left_out"}
+    package = unzip_export(running, answer.json())
     with open(package / "tracks.csv", "r", encoding="utf-8", newline="") as handle:
         records = list(csv.reader(handle))
     assert records[0] == TRACK_HEADER
@@ -1874,7 +1901,7 @@ def test_export_without_tracks_still_writes_tracks_csv_with_its_header(make_app,
     export_root.mkdir()
     running = make_app(settings={"export_root": str(export_root)})
     save_one(running)
-    package = Path(running.client.post("/api/export", {}).json()["path"])
+    package = unzip_export(running, running.client.post("/api/export", {}).json())
     assert (package / "tracks.csv").read_text(encoding="utf-8") == ",".join(TRACK_HEADER) + "\n"
 
 
@@ -1893,19 +1920,6 @@ def test_export_with_a_damaged_track_answers_400_and_names_the_file(make_app, tm
     assert str(damaged) in answer.error and "ID001" in answer.error
     assert list(export_root.iterdir()) == []
     assert damaged.read_bytes() == b"{nope"
-
-
-def test_export_missing_root_400(make_app, tmp_path: Path):
-    """A missing export folder is the user's problem and answers 400 with the path."""
-    running = make_app(settings={"export_root": str(tmp_path / "not-mounted")})
-    save_one(running)
-    answer = running.client.post("/api/export", {})
-    assert answer.status == 400
-    assert "not-mounted" in answer.error
-    assert "export folder not found" in answer.error
-
-
-# ----- routing -----
 
 
 def test_unknown_route_404(running: Running):
@@ -2158,3 +2172,104 @@ def test_species_answer_carries_name_changes(running: Running):
     assert species["ACOM"]["name"] == "Amphimedon nodosa"
     assert species["ACOM"]["name_changes"][0]["name"] == "Amphimedon compressa"
     assert species["ACAU"]["name_changes"] == []
+
+
+def test_export_download_before_any_export_is_404(running: Running):
+    assert running.client.get("/api/export/download").status == 404
+
+
+def test_export_download_resumes(running: Running):
+    save_one(running)
+    body = running.client.post("/api/export", {}).json()
+    whole = running.client.get(body["url"]).body
+    part = running.client.get(body["url"], headers={"Range": "bytes=100-199"})
+    assert part.status == 206 and part.body == whole[100:200]
+
+
+def test_add_genus_tags_and_comes_back_after_a_restart(make_app, running: Running):
+    answer = running.client.post("/api/species", {"name": "cinachyrella"})
+    assert answer.status == 200, answer.error
+    assert answer.json()["code"] == "CINA"
+    entry = next(item for item in answer.json()["species"] if item["code"] == "CINA")
+    assert entry["name"] == "Cinachyrella" and entry["part"] == ""
+    row = save_one(running, species="CINA")
+    assert row["Sponge Type"] == "Cinachyrella" and row["SpeciesCode"] == "CINA"
+    guide = json.loads((running.data_dir / "guide" / "guide.json").read_text(encoding="utf-8"))
+    assert any(item["code"] == "CINA" for item in guide["species"])
+    tally = {item["code"]: item for item in running.client.get("/api/tally").json()["tally"]}
+    assert tally["CINA"]["sightings"] == 1
+
+
+def test_adding_a_known_name_finds_it_instead(running: Running):
+    answer = running.client.post("/api/species", {"name": "aplysina CAULIFORMIS"})
+    assert answer.status == 200 and answer.json()["code"] == "ACAU"
+    assert not (running.data_dir / "custom_species.csv").exists()
+
+
+def test_adding_a_bad_name_saves_nothing(running: Running):
+    answer = running.client.post("/api/species", {"name": "<script>"})
+    assert answer.status == 400 and answer.error.startswith("name")
+    assert not (running.data_dir / "custom_species.csv").exists()
+
+
+def test_added_species_survive_a_new_app(tmp_path: Path, fake: FakeS3, static_root: Path):
+    data, cache = tmp_path / "keep-data", tmp_path / "keep-cache"
+    first = ScreenerApp(data, cache, CONFIG_DIR, static_root, fake.url, 0)
+    first.add_species({"name": "Cinachyrella"})
+    first.close()
+    second = ScreenerApp(data, cache, CONFIG_DIR, static_root, fake.url, 0)
+    try:
+        assert any(item["code"] == "CINA" for item in second.species_payload()["species"])
+    finally:
+        second.close()
+
+
+def test_download_name_stays_off_later_answers_on_one_connection(running: Running):
+    save_one(running)
+    body = running.client.post("/api/export", {}).json()
+    connection = http.client.HTTPConnection("127.0.0.1", running.port, timeout=10)
+    try:
+        connection.request("GET", body["url"])
+        first = connection.getresponse()
+        first.read()
+        assert first.getheader("Content-Disposition")
+        connection.request("GET", "/")
+        second = connection.getresponse()
+        second.read()
+        assert second.status == 200 and second.getheader("Content-Disposition") is None
+    finally:
+        connection.close()
+
+
+def test_failed_export_keeps_the_previous_zip(running: Running, monkeypatch):
+    save_one(running)
+    body = running.client.post("/api/export", {}).json()
+    whole = running.client.get(body["url"]).body
+
+    def broken(folder):
+        """Fail the way a full disk does."""
+        (folder.parent / "partial.zip").write_bytes(b"partial")
+        raise server_module.ExportError("zip: disk full")
+
+    monkeypatch.setattr(server_module, "_zip_package", broken)
+    assert running.client.post("/api/export", {}).status == 400
+    monkeypatch.undo()
+    assert running.client.get(body["url"]).body == whole
+    assert [item.name for item in (running.cache_dir / "exports").iterdir()] == [body["name"]]
+
+
+def test_export_while_nothing_is_saved_keeps_the_previous_zip(running: Running):
+    row = save_one(running)
+    body = running.client.post("/api/export", {}).json()
+    assert running.client.request("DELETE", f"/api/observations/{row['ID']}").status == 200
+    assert running.client.post("/api/export", {}).status == 400
+    assert running.client.get(body["url"]).status == 200
+
+
+def test_guide_that_cannot_take_a_species_leaves_the_list_unchanged(running: Running):
+    (running.data_dir / "guide").mkdir(exist_ok=True)
+    (running.data_dir / "guide" / "guide.json").write_text("{}", encoding="utf-8")
+    answer = running.client.post("/api/species", {"name": "Cinachyrella"})
+    assert answer.status == 400 and answer.error.startswith("guide")
+    assert not (running.data_dir / "custom_species.csv").exists()
+    assert all(item["code"] != "CINA" for item in running.client.get("/api/species").json()["species"])

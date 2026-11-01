@@ -814,6 +814,14 @@ class ObservationStore:
             rows.append(row)
         return rows
 
+    def add_species(self, species: Species) -> None:
+        """Accept a species added while the app runs.
+
+        Args:
+            species: The new species.
+        """
+        self._species[species.code] = species
+
     def _species_for(self, species_code: Any) -> Species:
         """Look up the species of a sighting.
 

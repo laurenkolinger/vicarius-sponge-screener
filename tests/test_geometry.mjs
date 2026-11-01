@@ -791,11 +791,11 @@ test('sightingsCount counts labeled rows and names the Later points apart', () =
   assert.equal(g.sightingsCount([{ LabelStatus: 'unlabeled' }, { LabelStatus: 'unlabeled' }]), '0 · 2 review');
 });
 
-test('exportSummary counts the package and gives the folder its own sentence, with no period on the path', () => {
-  assert.equal(g.exportSummary({ observations: 5, path: '/x/pkg', unlabeled_left_out: 0 }), 'Exported 5 sightings. Folder: /x/pkg');
-  assert.equal(g.exportSummary({ observations: 1, path: '/x/pkg', unlabeled_left_out: 1 }), 'Exported 1 sighting. 1 review point left out. Folder: /x/pkg');
-  assert.equal(g.exportSummary({ observations: 3, path: '/x/pkg', unlabeled_left_out: 2 }), 'Exported 3 sightings. 2 review points left out. Folder: /x/pkg');
-  assert.equal(g.exportSummary({ observations: 3, path: '/x/pkg' }), 'Exported 3 sightings. Folder: /x/pkg');
+test('exportSummary names the download and counts the package', () => {
+  assert.equal(g.exportSummary({ name: 'a.zip', observations: 5, unlabeled_left_out: 0 }), 'Downloading a.zip: 5 sightings.');
+  assert.equal(g.exportSummary({ name: 'a.zip', observations: 1, unlabeled_left_out: 1 }), 'Downloading a.zip: 1 sighting. 1 review point left out.');
+  assert.equal(g.exportSummary({ name: 'a.zip', observations: 3, unlabeled_left_out: 2 }), 'Downloading a.zip: 3 sightings. 2 review points left out.');
+  assert.equal(g.exportSummary({ name: 'a.zip', observations: 3 }), 'Downloading a.zip: 3 sightings.');
 });
 
 test('latestUnsaved finds the most recent unsaved pick of one video', () => {

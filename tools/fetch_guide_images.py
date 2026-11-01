@@ -25,6 +25,7 @@ PROJECT = Path(__file__).resolve().parent.parent
 SPECIES_CSV = PROJECT / "config" / "species.csv"
 GUIDE_DIR = PROJECT / "data" / "guide"
 GUIDE_JSON = GUIDE_DIR / "guide.json"
+CUSTOM_CSV = PROJECT / "data" / "custom_species.csv"
 
 # Names in the viewer that differ from the names in the ID guide. Every listed name
 # that the viewer holds contributes its photos, so a species split into morphotypes
@@ -111,6 +112,10 @@ def main(argv) -> int:
     """Download the photos and write guide.json. Returns a process exit code."""
     force = "--force" in argv
     species = list(csv.DictReader(SPECIES_CSV.open(newline="", encoding="utf-8")))
+    # Species and genera added in the app get photos too.
+    if CUSTOM_CSV.exists():
+        added = csv.DictReader(CUSTOM_CSV.open(newline="", encoding="utf-8-sig"))
+        species += [{"Code": row["Code"], "ScientificName": row["ScientificName"], "GuidePart": ""} for row in added]
     by_name = load_manifest()
     existing = {}
     if GUIDE_JSON.exists():
