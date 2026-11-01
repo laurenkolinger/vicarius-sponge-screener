@@ -4011,8 +4011,10 @@ function onTextFieldEnter(field, shift, repeat) {
   const marking = state.mode === 'marking';
   if (field === dom.filter && state.filterQuery.trim() !== '') {
     const code = state.matches[state.matchIndex];
-    if (!code) {
+    if (!code && !repeat) {
       addTaxon(state.filterQuery).then(updateMatches);
+    } else if (!code) {
+      return;
     } else if (marking && !repeat) {
       pickSpecies(code, shift);
     } else if (!marking) {

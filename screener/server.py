@@ -860,10 +860,10 @@ class ScreenerApp:
                 observations = _count_csv_rows(result.path / self.store.observations_path.name)
                 built = _zip_package(result.path)
                 archive = self._export_dir / built.name
+                os.replace(built, archive)
                 for older in self._export_dir.glob(f"*{EXPORT_ARCHIVE_SUFFIX}"):
                     if older != archive:
                         older.unlink()
-                os.replace(built, archive)
             except OSError as error:
                 raise ExportError(f"export: the export folder cannot be written: {error}") from error
             finally:
@@ -881,7 +881,7 @@ class ScreenerApp:
         Raises:
             HttpError: 404 when no export has been made since the app last cleared them.
         """
-        archives = sorted(self._export_dir.glob(f"*{EXPORT_ARCHIVE_SUFFIX}"))
+        archives = sorted(self._export_dir.glob(f"*{EXPORT_ARCHIVE_SUFFIX}"), key=lambda item: item.stat().st_mtime)
         if not archives:
             raise HttpError(HTTP_NOT_FOUND, "export: no export is ready. Click Export first.")
         return archives[-1]

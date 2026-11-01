@@ -8,6 +8,7 @@ import csv
 import json
 import os
 import re
+import shutil
 import string
 import sys
 import tempfile
@@ -87,6 +88,7 @@ def load_custom_species(data_dir: Path, taken: Sequence[str]) -> List[Species]:
         return []
     seen = set(taken)
     loaded: List[Species] = []
+    skipped = False
     try:
         with open(path, encoding="utf-8-sig", newline="") as handle:
             reader = csv.DictReader(handle)
@@ -96,14 +98,24 @@ def load_custom_species(data_dir: Path, taken: Sequence[str]) -> List[Species]:
                 code, name = row[COLUMNS[0]] or "", row[COLUMNS[1]] or ""
                 if code in seen or not CODE_PATTERN.fullmatch(code) or not name:
                     sys.stderr.write(f"{path}: skipped the row {code!r}, {name!r}\n")
+                    skipped = True
                     continue
                 seen.add(code)
                 loaded.append(Species(code=code, name=name, part="", default_pin=""))
     except (OSError, ValueError, csv.Error) as error:
         aside = path.with_name(f"{path.name}.damaged-{int(time.time())}")
-        os.replace(path, aside)
+        try:
+            os.replace(path, aside)
+        except OSError as move_error:
+            sys.stderr.write(f"{path}: could not be moved aside: {move_error}\n")
         sys.stderr.write(f"{path}: could not be read, moved to {aside.name}: {error}\n")
         return []
+    if skipped:
+        # The next added species rewrites the file without those rows, so keep a copy.
+        try:
+            shutil.copy2(path, path.with_name(f"{path.name}.before-skip-{int(time.time())}"))
+        except OSError as copy_error:
+            sys.stderr.write(f"{path}: could not keep a copy: {copy_error}\n")
     return loaded
 
 
@@ -161,9 +173,14 @@ def add_to_guide(data_dir: Path, species: Species) -> None:
     guide: Dict[str, Any] = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"species": []}
     if not isinstance(guide, dict) or not isinstance(guide.get("species"), list):
         raise ValueError(f"guide: {path} holds no species list")
-    if any(item.get("code") == species.code for item in guide["species"]):
+    entries = [item for item in guide["species"] if isinstance(item, dict) and item.get("code") == species.code]
+    if entries and entries[0].get("name") == species.name:
         return
-    guide["species"].append(
-        {"code": species.code, "name": species.name, "part": "", "description": "", "source": "", "viewer_name": "", "images": []}
-    )
+    if entries:
+        # A save that failed earlier left this code on another name.
+        entries[0]["name"] = species.name
+    else:
+        guide["species"].append(
+            {"code": species.code, "name": species.name, "part": "", "description": "", "source": "", "viewer_name": "", "images": []}
+        )
     _replace_file(path, lambda out: out.write(json.dumps(guide, indent=1, ensure_ascii=False) + "\n"))

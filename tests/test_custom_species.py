@@ -92,6 +92,39 @@ def test_guide_without_a_species_list_is_refused(tmp_path: Path):
         add_to_guide(tmp_path, Species(code="CINA", name="Cinachyrella", part="", default_pin=""))
 
 
+def test_skipped_rows_keep_a_copy_before_any_rewrite(tmp_path: Path):
+    content = "Code,ScientificName\nbad,Lower case code\nCINA,Cinachyrella\n"
+    (tmp_path / "custom_species.csv").write_text(content, encoding="utf-8")
+    load_custom_species(tmp_path, [])
+    copies = list(tmp_path.glob("custom_species.csv.before-skip-*"))
+    assert len(copies) == 1 and copies[0].read_text(encoding="utf-8") == content
+
+
+def test_folder_that_refuses_the_move_still_starts(tmp_path: Path, monkeypatch):
+    (tmp_path / "custom_species.csv").write_bytes(b"Other,Columns\nA,B\n")
+
+    def refuse(*args):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr("screener.custom_species.os.replace", refuse)
+    assert load_custom_species(tmp_path, []) == []
+
+
+def test_guide_entry_left_on_another_name_is_corrected(tmp_path: Path):
+    add_to_guide(tmp_path, Species(code="CINA", name="Cinachyra", part="", default_pin=""))
+    add_to_guide(tmp_path, Species(code="CINA", name="Cinachyrella", part="", default_pin=""))
+    guide = json.loads((tmp_path / "guide" / "guide.json").read_text(encoding="utf-8"))
+    assert [entry["name"] for entry in guide["species"]] == ["Cinachyrella"]
+
+
+def test_guide_with_a_stray_item_still_takes_a_species(tmp_path: Path):
+    (tmp_path / "guide").mkdir()
+    (tmp_path / "guide" / "guide.json").write_text('{"species": ["stray"]}', encoding="utf-8")
+    add_to_guide(tmp_path, Species(code="CINA", name="Cinachyrella", part="", default_pin=""))
+    guide = json.loads((tmp_path / "guide" / "guide.json").read_text(encoding="utf-8"))
+    assert guide["species"][1]["code"] == "CINA"
+
+
 def test_guide_entry_is_added_once(tmp_path: Path):
     item = Species(code="CINA", name="Cinachyrella", part="", default_pin="")
     add_to_guide(tmp_path, item)
