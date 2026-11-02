@@ -130,6 +130,27 @@ def test_failed_worker_reports_why_and_keeps_the_last_zip(tmp_path: Path):
     assert not list((tmp_path / "out").glob("building"))
 
 
+def test_worker_that_dies_before_reading_still_reports_its_error(tmp_path: Path):
+    worker = tmp_path / "dead.py"
+    worker.write_text('import sys\nsys.stderr.write("No module named cv2")\nsys.exit(1)\n', encoding="utf-8")
+    big = {"name": "a.MP4", "source": "a", "marks": [{**MARK, "points": [[index, 0.5, 0.5, 1.0] for index in range(100000)]}]}
+    job = make_job(tmp_path, videos=[big])
+    job._worker = worker
+    job.start()
+    status = wait_until_finished(job)
+    assert status["state"] == "failed" and "No module named cv2" in status["message"]
+
+
+def test_each_run_has_its_own_name_and_a_restart_has_none(tmp_path: Path):
+    job = make_job(tmp_path)
+    first = job.start()["run"]
+    wait_until_finished(job)
+    second = job.start()["run"]
+    wait_until_finished(job)
+    assert first and second and first != second
+    assert make_job(tmp_path).status()["run"] is None
+
+
 def test_a_new_job_offers_the_zip_from_an_earlier_run(tmp_path: Path):
     job = make_job(tmp_path)
     job.start()

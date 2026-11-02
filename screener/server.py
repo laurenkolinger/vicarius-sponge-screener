@@ -61,6 +61,9 @@ EXPORT_ARCHIVE_TYPE = "application/zip"
 # Images are already compressed, so zipping them again only costs time.
 EXPORT_STORED_SUFFIXES = (".jpg", ".jpeg", ".png", ".mp4")
 VIDEO_EXPORT_FOLDER = "video_exports"
+# How long a video export waits for sightings that have no track yet.
+VIDEO_EXPORT_TRACK_WAIT_SECONDS = 600.0
+VIDEO_EXPORT_TRACK_POLL_SECONDS = 3.0
 VIDEO_EXPORT_ROUTE = "/api/export/videos"
 VIDEO_DOWNLOAD_ROUTE = "/api/export/videos/download"
 ANNOTATE_WORKER = Path(__file__).resolve().parent / "annotate_worker.py"
@@ -897,6 +900,21 @@ class ScreenerApp:
             "unlabeled_left_out": result.unlabeled_left_out,
         }
 
+    def _finish_tracks(self, rows: List[Dict[str, str]]) -> None:
+        """Queue the sightings with no track yet, and wait a limited time for them.
+
+        A sighting that still has no track afterward shows only near its clicked moment.
+
+        Args:
+            rows: The sightings.
+        """
+        deadline = time.monotonic() + VIDEO_EXPORT_TRACK_WAIT_SECONDS
+        keys = sorted({row["S3Key"] for row in rows})
+        while time.monotonic() < deadline:
+            if not any(self.tracks_payload(key)["pending"] for key in keys):
+                return
+            time.sleep(VIDEO_EXPORT_TRACK_POLL_SECONDS)
+
     def _video_marks(self) -> List[Dict[str, Any]]:
         """List every video with sightings, and what to draw on it.
 
@@ -905,6 +923,7 @@ class ScreenerApp:
             ``label`` (such as ID031 ACAU), ``tier``, ``time``, ``point``, and ``points``.
         """
         rows = self.store.rows()
+        self._finish_tracks(rows)
         tracks = self.store.tracks.for_ids([row["ID"] for row in rows])
         parts = {item.code: item.part for item in self._species}
         tiers = {"1": "original", "2": "added"}
@@ -912,7 +931,13 @@ class ScreenerApp:
         for row in rows:
             code = row["SpeciesCode"]
             video = videos.setdefault(
-                row["S3Key"], {"name": row["FileName"], "source": self._track_source(row["S3Key"]), "marks": []}
+                row["S3Key"],
+                {
+                    "name": row["FileName"],
+                    "source": self._track_source(row["S3Key"]),
+                    "converted": self.converter.converted_path(row["S3Key"]) is not None,
+                    "marks": [],
+                },
             )
             video["marks"].append(
                 {

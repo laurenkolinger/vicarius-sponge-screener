@@ -219,6 +219,7 @@ const runtime = {
   watchWarned: false,
   videoExportTimer: 0,
   videoExportWatched: false,
+  videoExportRun: null,
   guideClosedForRoom: false,
   loadToken: 0,
   queryEditedAt: -Infinity,
@@ -3553,6 +3554,7 @@ async function startVideoExport() {
   try {
     const status = await request('POST', '/api/export/videos', {});
     toast('Rendering the videos. You can keep working.', 'info');
+    runtime.videoExportRun = status.run;
     followVideoExport(status);
   } catch (error) {
     dom.exportVideos.disabled = false;
@@ -3570,13 +3572,16 @@ function followVideoExport(status) {
     const share = Math.round(((status.done + status.fraction) / Math.max(1, status.total)) * 100);
     dom.exportVideos.disabled = true;
     dom.exportVideos.textContent = `Videos ${status.done + 1 > status.total ? status.total : status.done + 1}/${status.total} (${share}%)`;
-    dom.exportVideos.title = status.message ? `Rendering ${status.message}.` : 'Preparing the videos.';
+    dom.exportVideos.title = status.message ? `Working on ${status.message}.` : 'Preparing the videos.';
     runtime.videoExportTimer = window.setTimeout(pollVideoExport, VIDEO_EXPORT_POLL_MS);
     return;
   }
   dom.exportVideos.disabled = false;
   dom.exportVideos.textContent = 'Export videos';
-  if (runtime.videoExportWatched && status.state === 'done') {
+  // A zip from another run is an older export, left when the app restarted during this one.
+  if (runtime.videoExportWatched && status.state === 'done' && status.run !== runtime.videoExportRun) {
+    toast('The video export stopped when the app restarted. Click Export videos to finish it.', 'error', LONG_TOAST_MS);
+  } else if (runtime.videoExportWatched && status.state === 'done') {
     const link = el('a', { attrs: { href: '/api/export/videos/download', download: status.name } });
     document.body.append(link);
     link.click();
@@ -4775,6 +4780,7 @@ async function start() {
   request('GET', '/api/export/videos').then((status) => {
     if (status.state === 'running') {
       runtime.videoExportWatched = true;
+      runtime.videoExportRun = status.run;
       followVideoExport(status);
     }
   }).catch(() => {

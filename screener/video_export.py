@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -53,7 +54,7 @@ class VideoExporter:
         self._lock = threading.Lock()
         self._process: Optional[subprocess.Popen] = None
         self._stopping = False
-        self._status: Dict[str, Any] = {"state": "idle", "done": 0, "total": 0, "fraction": 0.0, "message": "", "name": ""}
+        self._status: Dict[str, Any] = {"state": "idle", "run": None, "done": 0, "total": 0, "fraction": 0.0, "message": "", "name": ""}
         self._restore()
 
     def _restore(self) -> None:
@@ -86,7 +87,7 @@ class VideoExporter:
                 return dict(self._status)
             if not self._python.exists():
                 raise ValueError(f"videos: tracking is not set up, so {self._python} is missing")
-            self._status = {"state": "running", "done": 0, "total": 0, "fraction": 0.0, "message": "", "name": ""}
+            self._status = {"state": "running", "run": uuid.uuid4().hex, "done": 0, "total": 0, "fraction": 0.0, "message": "", "name": ""}
         thread = threading.Thread(target=self._run, name="video-export", daemon=True)
         thread.start()
         return self.status()
@@ -125,8 +126,12 @@ class VideoExporter:
             )
             with self._lock:
                 self._process = process
-            process.stdin.write(request)
-            process.stdin.close()
+            try:
+                process.stdin.write(request)
+                process.stdin.close()
+            except BrokenPipeError:
+                # The worker died before reading; its error output, read below, says why.
+                pass
             for line in process.stdout:
                 if line.startswith("progress "):
                     self._update(fraction=float(line.split()[1]))
@@ -156,13 +161,16 @@ class VideoExporter:
             keep = set()
             for index, video in enumerate(videos):
                 self._update(done=index, fraction=0.0, message=video["name"])
-                digest = hashlib.sha256(json.dumps(video["marks"], sort_keys=True).encode("utf-8")).hexdigest()[:HASH_LENGTH]
+                # A converted copy has its own frames, so it gets its own render.
+                signature = {"marks": video["marks"], "converted": True} if video.get("converted") else video["marks"]
+                digest = hashlib.sha256(json.dumps(signature, sort_keys=True).encode("utf-8")).hexdigest()[:HASH_LENGTH]
                 stem = Path(video["name"]).stem
                 render = rendered / f"{stem}_tracked.{digest}.mp4"
                 keep.add(render.name)
                 if not render.exists():
                     self._render(video, render)
-                os.link(render, target_folder / f"{stem}_tracked.mp4")
+                # Two folders can hold videos with one name, so the number keeps both.
+                os.link(render, target_folder / f"{stem}_{index + 1:02d}_tracked.mp4" if (target_folder / f"{stem}_tracked.mp4").exists() else target_folder / f"{stem}_tracked.mp4")
             self._update(done=len(videos), fraction=1.0, message="Zipping")
             built = self._zip_package(package)
             archive = self._folder / f"{ARCHIVE_PREFIX}{built.stem.rsplit('_', 1)[-1]}.zip"

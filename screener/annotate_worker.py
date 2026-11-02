@@ -161,21 +161,28 @@ def render(request: Dict[str, Any]) -> None:
                     for mark, spot in placed:
                         draw_mark(frame, spot, mark["label"], COLORS.get(mark["tier"], COLORS["other"]))
                     raw = frame.tobytes()
-                encoder.stdin.write(raw)
+                try:
+                    encoder.stdin.write(raw)
+                except BrokenPipeError:
+                    # The encoder died; its own log, read below, says why.
+                    break
                 index += 1
                 if index % PROGRESS_EVERY_FRAMES == 0:
                     print(f"progress {min(1.0, index / total):.4f}", flush=True)
         finally:
-            encoder.stdin.close()
+            try:
+                encoder.stdin.close()
+            except BrokenPipeError:
+                pass
             decoder.stdout.close()
             decoder.wait()
             encoder.wait()
-        if index == 0 or decoder.returncode != 0:
-            decode_log.seek(0)
-            raise RuntimeError(f"source: ffmpeg could not decode {source}: {decode_log.read().decode('utf-8', 'replace')[-STDERR_TAIL:]}")
         if encoder.returncode != 0:
             encode_log.seek(0)
             raise RuntimeError(f"output: ffmpeg could not encode {output}: {encode_log.read().decode('utf-8', 'replace')[-STDERR_TAIL:]}")
+        if index == 0 or decoder.returncode != 0:
+            decode_log.seek(0)
+            raise RuntimeError(f"source: ffmpeg could not decode {source}: {decode_log.read().decode('utf-8', 'replace')[-STDERR_TAIL:]}")
 
 
 def main() -> int:
