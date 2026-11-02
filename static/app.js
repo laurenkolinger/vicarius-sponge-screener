@@ -90,6 +90,8 @@ const ROOT_PREFIX = 'TCRMP_video_ondeck/';
 const MUTATION_HEADER = 'X-Screener';
 /** How often the page saves the stretches watched while a video plays. */
 const WATCH_SAVE_MS = 5000;
+/** How often the page asks how far the video export has come. */
+const VIDEO_EXPORT_POLL_MS = 3000;
 /** The compare view: the column's share of the window before any drag, the photo's height per width, and the caption. */
 const COMPARE_COLUMN_SHARE = 0.32;
 const COMPARE_PHOTO_RATIO = 0.72;
@@ -215,6 +217,8 @@ const runtime = {
   watch: createWatchTracker(),
   watchSavedAt: 0,
   watchWarned: false,
+  videoExportTimer: 0,
+  videoExportWatched: false,
   guideClosedForRoom: false,
   loadToken: 0,
   queryEditedAt: -Infinity,
@@ -274,6 +278,7 @@ const dom = {
   currentVideo: byId('current-video'),
   annotator: byId('annotator'),
   exportButton: byId('export'),
+  exportVideos: byId('export-videos'),
   helpToggle: byId('help-toggle'),
   help: byId('help'),
   helpClose: byId('help-close'),
@@ -3539,6 +3544,60 @@ async function exportPackage() {
   }
 }
 
+/**
+ * Start the video export, or fetch the result when it is already running.
+ * @returns {Promise<void>} Settles after the job started or the error shows.
+ */
+async function startVideoExport() {
+  dom.exportVideos.disabled = true;
+  try {
+    const status = await request('POST', '/api/export/videos', {});
+    toast('Rendering the videos. You can keep working.', 'info');
+    followVideoExport(status);
+  } catch (error) {
+    dom.exportVideos.disabled = false;
+    toast(`The video export did not start. ${endSentence(error.message)}`, 'error', LONG_TOAST_MS);
+  }
+}
+
+/**
+ * Show the video export's progress on its button until it ends.
+ * @param {object} status The job's state.
+ */
+function followVideoExport(status) {
+  window.clearTimeout(runtime.videoExportTimer);
+  if (status.state === 'running') {
+    const share = Math.round(((status.done + status.fraction) / Math.max(1, status.total)) * 100);
+    dom.exportVideos.disabled = true;
+    dom.exportVideos.textContent = `Videos ${status.done + 1 > status.total ? status.total : status.done + 1}/${status.total} (${share}%)`;
+    dom.exportVideos.title = status.message ? `Rendering ${status.message}.` : 'Preparing the videos.';
+    runtime.videoExportTimer = window.setTimeout(pollVideoExport, VIDEO_EXPORT_POLL_MS);
+    return;
+  }
+  dom.exportVideos.disabled = false;
+  dom.exportVideos.textContent = 'Export videos';
+  if (runtime.videoExportWatched && status.state === 'done') {
+    const link = el('a', { attrs: { href: '/api/export/videos/download', download: status.name } });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    toast(`Downloading ${status.name}.`, 'ok', LONG_TOAST_MS);
+  } else if (runtime.videoExportWatched && status.state === 'failed') {
+    toast(`The video export failed. ${endSentence(status.message)}`, 'error', LONG_TOAST_MS);
+  }
+  runtime.videoExportWatched = false;
+}
+
+/** Ask how far the video export has come. A lost answer tries again at the next turn. */
+async function pollVideoExport() {
+  try {
+    runtime.videoExportWatched = true;
+    followVideoExport(await request('GET', '/api/export/videos'));
+  } catch (error) {
+    runtime.videoExportTimer = window.setTimeout(pollVideoExport, VIDEO_EXPORT_POLL_MS);
+  }
+}
+
 /** The resizable panes, set up when the page starts. */
 let panes = null;
 
@@ -4628,6 +4687,7 @@ function wireEvents() {
   dom.toLabel.addEventListener('click', onToLabelClick);
   dom.annotator.addEventListener('change', saveAnnotator);
   dom.exportButton.addEventListener('click', exportPackage);
+  dom.exportVideos.addEventListener('click', startVideoExport);
   for (const list of [dom.pins, dom.tallyRows, dom.matches, dom.sightings]) {
     list.addEventListener('mouseover', onSpeciesHover);
   }
@@ -4711,6 +4771,15 @@ async function start() {
   if (roomForGuide()) {
     toggleGuide(true);
   }
+  // A reload during a video export picks its progress back up.
+  request('GET', '/api/export/videos').then((status) => {
+    if (status.state === 'running') {
+      runtime.videoExportWatched = true;
+      followVideoExport(status);
+    }
+  }).catch(() => {
+    // The button still works; its next use reports any problem.
+  });
 }
 
 const scrubber = createScrubber(dom.video);

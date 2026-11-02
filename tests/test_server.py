@@ -2312,3 +2312,22 @@ def test_damaged_exemplars_read_as_none(running: Running):
     (running.data_dir / "guide_exemplars.json").write_text("{broken", encoding="utf-8")
     species = running.client.get("/api/species").json()["species"]
     assert all(item["exemplar"] is None for item in species)
+
+
+def test_video_export_lists_each_sighting_for_drawing(running: Running):
+    row = save_one(running, species="ACAU")
+    later = save_one(running, species=None, time=20.0)
+    videos = running.app._video_marks()
+    assert len(videos) == 1
+    marks = {mark["label"]: mark for mark in videos[0]["marks"]}
+    assert marks[f"{row['ID']} ACAU"]["tier"] == "original"
+    assert marks[f"{later['ID']} Review"]["tier"] == "review"
+    assert marks[f"{row['ID']} ACAU"]["point"] == {"x": 0.25, "y": 0.75}
+
+
+def test_video_export_routes(running: Running):
+    assert running.client.get("/api/export/videos").json()["state"] == "idle"
+    assert running.client.get("/api/export/videos/download").status == 404
+    answer = running.client.post("/api/export/videos", {})
+    assert answer.status == 400 and answer.error.startswith("videos")
+    assert running.client.post("/api/export/videos", {}, mutation_header=False).status == 403

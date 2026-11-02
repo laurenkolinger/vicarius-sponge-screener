@@ -33,6 +33,7 @@ from screener.convert import Converter, ConvertError, ConvertStatus
 from screener.custom_species import add_to_guide, clean_name, load_custom_species, new_code, save_custom_species
 from screener.exemplars import choose_exemplar, load_exemplars
 from screener.export import ExportError, export_package
+from screener.video_export import VideoExporter
 from screener.keys import extension_of, quote_key, validate_key
 from screener.names import load_site_names
 from screener.relay import ChunkRelay, ObjectNotFound, RangeNotSatisfiable, RelayError, parse_range_header
@@ -58,7 +59,11 @@ EXPORT_DOWNLOAD_ROUTE = "/api/export/download"
 EXPORT_ARCHIVE_SUFFIX = ".zip"
 EXPORT_ARCHIVE_TYPE = "application/zip"
 # Images are already compressed, so zipping them again only costs time.
-EXPORT_STORED_SUFFIXES = (".jpg", ".jpeg", ".png")
+EXPORT_STORED_SUFFIXES = (".jpg", ".jpeg", ".png", ".mp4")
+VIDEO_EXPORT_FOLDER = "video_exports"
+VIDEO_EXPORT_ROUTE = "/api/export/videos"
+VIDEO_DOWNLOAD_ROUTE = "/api/export/videos/download"
+ANNOTATE_WORKER = Path(__file__).resolve().parent / "annotate_worker.py"
 NAME_CHANGES_FILE = "species_name_changes.csv"
 SITES_FILE = "sites.csv"
 SETTINGS_FILE = "settings.json"
@@ -347,6 +352,14 @@ class ScreenerApp:
         except BaseException:
             self.relay.close()
             raise
+        self.video_export = VideoExporter(
+            self.cache_dir / VIDEO_EXPORT_FOLDER,
+            track_python,
+            ANNOTATE_WORKER,
+            self._video_marks,
+            lambda folder: export_package(self.store, folder, date.today()).path,
+            _zip_package,
+        )
         self.tracker = Tracker(track_python, track_worker, source_for=self._track_source, save_track=self.store.tracks.save)
         self._closed = False
 
@@ -383,6 +396,7 @@ class ScreenerApp:
         if self._closed:
             return
         self._closed = True
+        self.video_export.close()
         self.tracker.close()
         self.converter.close()
         self.relay.close()
@@ -883,6 +897,34 @@ class ScreenerApp:
             "unlabeled_left_out": result.unlabeled_left_out,
         }
 
+    def _video_marks(self) -> List[Dict[str, Any]]:
+        """List every video with sightings, and what to draw on it.
+
+        Returns:
+            One ``{"name", "source", "marks"}`` per video, where each mark holds its
+            ``label`` (such as ID031 ACAU), ``tier``, ``time``, ``point``, and ``points``.
+        """
+        rows = self.store.rows()
+        tracks = self.store.tracks.for_ids([row["ID"] for row in rows])
+        parts = {item.code: item.part for item in self._species}
+        tiers = {"1": "original", "2": "added"}
+        videos: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            code = row["SpeciesCode"]
+            video = videos.setdefault(
+                row["S3Key"], {"name": row["FileName"], "source": self._track_source(row["S3Key"]), "marks": []}
+            )
+            video["marks"].append(
+                {
+                    "label": f"{row['ID']} {code or 'Review'}",
+                    "tier": tiers.get(parts.get(code, ""), "other") if code else "review",
+                    "time": float(row["TimestampSeconds"]),
+                    "point": {"x": float(row["PointX"]), "y": float(row["PointY"])},
+                    "points": tracks.get(row["ID"], {}).get("points", []),
+                }
+            )
+        return list(videos.values())
+
     def export_archive(self) -> Path:
         """Return the newest export zip.
 
@@ -981,6 +1023,8 @@ class _Handler(BaseHTTPRequestHandler):
         "/api/prefetch": {"GET": "_get_prefetch", "POST": "_post_prefetch"},
         "/api/export": {"POST": "_post_export"},
         EXPORT_DOWNLOAD_ROUTE: {"GET": "_get_export_download"},
+        VIDEO_EXPORT_ROUTE: {"GET": "_get_video_export", "POST": "_post_video_export"},
+        VIDEO_DOWNLOAD_ROUTE: {"GET": "_get_video_download"},
         "/video": {"GET": "_get_video"},
     }
     PREFIX_ROUTES: Tuple[Tuple[str, Dict[str, str]], ...] = (
@@ -1579,6 +1623,26 @@ class _Handler(BaseHTTPRequestHandler):
         """Write the export package."""
         self._object_body()
         self._send_json(HTTP_OK, self.server.app.export())
+
+    def _get_video_export(self, rest: str, query: Dict[str, List[str]]) -> None:
+        """Answer how far the video export has come."""
+        self._send_json(HTTP_OK, self.server.app.video_export.status())
+
+    def _post_video_export(self, rest: str, query: Dict[str, List[str]]) -> None:
+        """Start the video export."""
+        self._object_body()
+        self._send_json(HTTP_OK, self.server.app.video_export.start())
+
+    def _get_video_download(self, rest: str, query: Dict[str, List[str]]) -> None:
+        """Send the finished video export as a download, resumable by the browser."""
+        archive = self.server.app.video_export.archive()
+        if archive is None:
+            raise HttpError(HTTP_NOT_FOUND, "videos: no video export is ready.")
+        self._download_name = archive.name
+        try:
+            self._send_file(archive, EXPORT_ARCHIVE_TYPE, self.headers.get("Range"), True, NO_CACHE)
+        finally:
+            self._download_name = None
 
     def _get_export_download(self, rest: str, query: Dict[str, List[str]]) -> None:
         """Send the newest export zip as a download, resumable by the browser."""

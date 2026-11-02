@@ -211,6 +211,10 @@ Press C or click **Compare** in the guide for one photo of each species, side by
 
 Drag the edge between any two panes to resize them, or focus the edge and use the arrow keys. Double-click an edge for the default size. The app remembers your sizes in this browser.
 
+## Export videos
+
+**Export** downloads the tables, frames, and crops in about a second. **Export videos** downloads all of that plus each video with a sighting, in `videos_tracked/`, with every ID and species code drawn on its tracked position in the phase colors. Review points show in amber. Rendering runs in the background for a few minutes per video while you keep working, and the browser downloads the zip when it finishes. A video whose sightings have not changed reuses its last render.
+
 ## Add a genus or species
 
 Type the name in the wheel or the filter box. When nothing matches, press Enter, or click **Add** in the filter box, then confirm. A name with a hyphen or a period goes in the filter box, because the wheel does not take those keys. The name joins the list as Phase 3 with a code such as CINA, and stays in `custom_species.csv` in the data folder. Delete its row there to remove it.
