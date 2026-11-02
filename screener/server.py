@@ -26,7 +26,7 @@ import zipfile
 from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple
 
 from screener.config import KEY_PREFIX, MAX_BODY_BYTES, PLAYABLE_EXTENSIONS, TALLY_TARGET, TRACK_PYTHON, TRACK_WORKER, VERSION
 from screener.convert import Converter, ConvertError, ConvertStatus
@@ -360,7 +360,7 @@ class ScreenerApp:
             track_python,
             ANNOTATE_WORKER,
             self._video_marks,
-            lambda folder: export_package(self.store, folder, date.today()).path,
+            lambda folder, keys: export_package(self.store, folder, date.today(), keys).path,
             _zip_package,
         )
         self.tracker = Tracker(track_python, track_worker, source_for=self._track_source, save_track=self.store.tracks.save)
@@ -900,6 +900,46 @@ class ScreenerApp:
             "unlabeled_left_out": result.unlabeled_left_out,
         }
 
+    def export_choices(self) -> Dict[str, Any]:
+        """List the videos an export can hold: those with sightings, by site and transect.
+
+        Returns:
+            ``{"videos": [{"key", "name", "site", "transect", "sightings", "review"}]}``,
+            where ``sightings`` counts the labeled rows and ``review`` the Review points.
+        """
+        videos: Dict[str, Dict[str, Any]] = {}
+        for row in self.store.rows():
+            video = videos.setdefault(
+                row["S3Key"],
+                {"key": row["S3Key"], "name": row["FileName"], "site": row["Site"], "transect": row["Transect"], "sightings": 0, "review": 0},
+            )
+            video["sightings" if row["SpeciesCode"] else "review"] += 1
+        return {"videos": sorted(videos.values(), key=lambda item: (item["site"], item["transect"], item["name"]))}
+
+    def start_video_export(self, keys: Any) -> Dict[str, Any]:
+        """Start the export of the chosen videos.
+
+        Args:
+            keys: The S3 keys from the request, or None for every video.
+
+        Returns:
+            The job's state.
+
+        Raises:
+            HttpError: 400 when keys is not a list of videos with sightings.
+            ValueError: Starting with ``videos:`` when the Python with OpenCV is missing.
+        """
+        if keys is None:
+            return self.video_export.start()
+        offered = self.export_choices()["videos"]
+        known = {video["key"] for video in offered}
+        if not isinstance(keys, list) or not keys:
+            raise HttpError(HTTP_BAD_REQUEST, "keys: expected a list with at least one video")
+        unknown = [key for key in keys if not isinstance(key, str) or key not in known]
+        if unknown:
+            raise HttpError(HTTP_BAD_REQUEST, f"keys: no sightings for {unknown[0]!r}")
+        return self.video_export.start(keys, _export_label(offered, set(keys)))
+
     def _finish_tracks(self, rows: List[Dict[str, str]]) -> None:
         """Queue the sightings with no track yet, and wait a limited time for them.
 
@@ -915,14 +955,17 @@ class ScreenerApp:
                 return
             time.sleep(VIDEO_EXPORT_TRACK_POLL_SECONDS)
 
-    def _video_marks(self) -> List[Dict[str, Any]]:
-        """List every video with sightings, and what to draw on it.
+    def _video_marks(self, keys: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """List the videos with sightings, and what to draw on each.
+
+        Args:
+            keys: The videos to list, by S3 key, or None for every video.
 
         Returns:
             One ``{"name", "source", "marks"}`` per video, where each mark holds its
             ``label`` (such as ID031 ACAU), ``tier``, ``time``, ``point``, and ``points``.
         """
-        rows = self.store.rows()
+        rows = [row for row in self.store.rows() if keys is None or row["S3Key"] in keys]
         self._finish_tracks(rows)
         tracks = self.store.tracks.for_ids([row["ID"] for row in rows])
         parts = {item.code: item.part for item in self._species}
@@ -960,6 +1003,23 @@ class ScreenerApp:
         if not archives:
             raise HttpError(HTTP_NOT_FOUND, "export: no export is ready. Click Export first.")
         return archives[-1]
+
+
+def _export_label(offered: List[Dict[str, Any]], chosen: Set[str]) -> str:
+    """Name a part-way export for its zip.
+
+    Args:
+        offered: The videos on offer, from ``export_choices``.
+        chosen: The keys chosen.
+
+    Returns:
+        The sites joined with underscores when each is whole, such as Buck_Island, and
+        ``selected`` when any site is only partly chosen.
+    """
+    sites = sorted({video["site"] for video in offered if video["key"] in chosen})
+    if any(video["key"] not in chosen for video in offered if video["site"] in sites):
+        return "selected"
+    return "_".join(re.sub(r"[^A-Za-z0-9]+", "_", site).strip("_") for site in sites) or "selected"
 
 
 def _zip_package(folder: Path) -> Path:
@@ -1047,6 +1107,7 @@ class _Handler(BaseHTTPRequestHandler):
         "/api/convert": {"GET": "_get_convert", "POST": "_post_convert"},
         "/api/prefetch": {"GET": "_get_prefetch", "POST": "_post_prefetch"},
         "/api/export": {"POST": "_post_export"},
+        "/api/export/choices": {"GET": "_get_export_choices"},
         EXPORT_DOWNLOAD_ROUTE: {"GET": "_get_export_download"},
         VIDEO_EXPORT_ROUTE: {"GET": "_get_video_export", "POST": "_post_video_export"},
         VIDEO_DOWNLOAD_ROUTE: {"GET": "_get_video_download"},
@@ -1654,9 +1715,13 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(HTTP_OK, self.server.app.video_export.status())
 
     def _post_video_export(self, rest: str, query: Dict[str, List[str]]) -> None:
-        """Start the video export."""
-        self._object_body()
-        self._send_json(HTTP_OK, self.server.app.video_export.start())
+        """Start the export of the chosen videos, or of every video when the body names none."""
+        body = self._object_body()
+        self._send_json(HTTP_OK, self.server.app.start_video_export(body.get("keys")))
+
+    def _get_export_choices(self, rest: str, query: Dict[str, List[str]]) -> None:
+        """List the videos an export can hold."""
+        self._send_json(HTTP_OK, self.server.app.export_choices())
 
     def _get_video_download(self, rest: str, query: Dict[str, List[str]]) -> None:
         """Send the finished video export as a download, resumable by the browser."""

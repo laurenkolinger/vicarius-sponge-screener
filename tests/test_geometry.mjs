@@ -791,13 +791,6 @@ test('sightingsCount counts labeled rows and names the Later points apart', () =
   assert.equal(g.sightingsCount([{ LabelStatus: 'unlabeled' }, { LabelStatus: 'unlabeled' }]), '0 · 2 review');
 });
 
-test('exportSummary names the download and counts the package', () => {
-  assert.equal(g.exportSummary({ name: 'a.zip', observations: 5, unlabeled_left_out: 0 }), 'Downloading a.zip: 5 sightings.');
-  assert.equal(g.exportSummary({ name: 'a.zip', observations: 1, unlabeled_left_out: 1 }), 'Downloading a.zip: 1 sighting. 1 review point left out.');
-  assert.equal(g.exportSummary({ name: 'a.zip', observations: 3, unlabeled_left_out: 2 }), 'Downloading a.zip: 3 sightings. 2 review points left out.');
-  assert.equal(g.exportSummary({ name: 'a.zip', observations: 3 }), 'Downloading a.zip: 3 sightings.');
-});
-
 test('latestUnsaved finds the most recent unsaved pick of one video', () => {
   const saves = [
     { key: 'a', order: 1 }, { key: 'b', order: 2 }, { key: 'a', order: 4 }, { key: 'a', order: 3 },

@@ -50,7 +50,7 @@ open(request["output"], "wb").write(b"video")
 def make_job(tmp_path: Path, worker_body: str = GOOD_WORKER, videos=None) -> VideoExporter:
     """Build a job with a stand-in worker, package, and zip."""
 
-    def build_package(folder: Path) -> Path:
+    def build_package(folder: Path, keys=None) -> Path:
         package = folder / "spongeGroundTruth_20261101"
         package.mkdir()
         (package / "observations.csv").write_text("x\n")
@@ -65,7 +65,7 @@ def make_job(tmp_path: Path, worker_body: str = GOOD_WORKER, videos=None) -> Vid
         return archive
 
     listed = [{"name": "a.MP4", "source": "a", "marks": [MARK]}] if videos is None else videos
-    return VideoExporter(tmp_path / "out", Path(sys.executable), make_worker(tmp_path, worker_body), lambda: listed, build_package, zip_package)
+    return VideoExporter(tmp_path / "out", Path(sys.executable), make_worker(tmp_path, worker_body), lambda keys: [video for video in listed if keys is None or video["source"] in keys], build_package, zip_package)
 
 
 def wait_until_finished(job: VideoExporter) -> dict:
@@ -149,6 +149,34 @@ def test_each_run_has_its_own_name_and_a_restart_has_none(tmp_path: Path):
     wait_until_finished(job)
     assert first and second and first != second
     assert make_job(tmp_path).status()["run"] is None
+
+
+def test_part_of_the_videos_goes_in_a_named_zip_and_keeps_the_other_renders(tmp_path: Path):
+    videos = [{"name": "a.MP4", "source": "a", "marks": [MARK]}, {"name": "b.MP4", "source": "b", "marks": [MARK]}]
+    job = make_job(tmp_path, videos=videos)
+    job.start()
+    wait_until_finished(job)
+    before = {item.name for item in (tmp_path / "out" / "rendered").glob("*.mp4")}
+    assert len(before) == 2
+    job.start(["a"], "Buck_Island")
+    status = wait_until_finished(job)
+    assert status["total"] == 1 and status["name"] == "spongeGroundTruth_with_videos_Buck_Island_20261101.zip"
+    with zipfile.ZipFile(job.archive()) as opened:
+        tracked = [name for name in opened.namelist() if name.endswith("_tracked.mp4")]
+    assert [Path(name).name for name in tracked] == ["a_tracked.mp4"]
+    assert {item.name for item in (tmp_path / "out" / "rendered").glob("*.mp4")} == before
+
+
+def test_part_of_the_videos_replaces_only_its_own_old_render(tmp_path: Path):
+    videos = [{"name": "a.MP4", "source": "a", "marks": [MARK]}, {"name": "b.MP4", "source": "b", "marks": [MARK]}]
+    job = make_job(tmp_path, videos=videos)
+    job.start()
+    wait_until_finished(job)
+    videos[0]["marks"] = [{**MARK, "label": "ID001 AFUL"}]
+    job.start(["a"], "selected")
+    wait_until_finished(job)
+    names = sorted(item.name.split(".")[0] for item in (tmp_path / "out" / "rendered").glob("*.mp4"))
+    assert names == ["a_tracked", "b_tracked"]
 
 
 def test_a_new_job_offers_the_zip_from_an_earlier_run(tmp_path: Path):

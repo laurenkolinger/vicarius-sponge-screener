@@ -2325,6 +2325,21 @@ def test_video_export_lists_each_sighting_for_drawing(running: Running):
     assert marks[f"{row['ID']} ACAU"]["point"] == {"x": 0.25, "y": 0.75}
 
 
+def test_export_label_names_whole_sites_and_marks_a_part():
+    offered = [{"key": "a", "site": "Buck Island"}, {"key": "b", "site": "Buck Island"}, {"key": "c", "site": "Flat Cay"}]
+    assert server_module._export_label(offered, {"a", "b"}) == "Buck_Island"
+    assert server_module._export_label(offered, {"a"}) == "selected"
+    assert server_module._export_label(offered, {"a", "b", "c"}) == "Buck_Island_Flat_Cay"
+
+
+def test_export_choice_routes_refuse_bad_keys(running: Running):
+    assert running.client.get("/api/export/choices").json() == {"videos": []}
+    assert running.client.post("/api/export/videos", {"keys": []}).status == 400
+    assert running.client.post("/api/export/videos", {"keys": "a"}).status == 400
+    unknown = running.client.post("/api/export/videos", {"keys": ["../../etc/passwd"]})
+    assert unknown.status == 400 and unknown.error.startswith("keys")
+
+
 def test_video_export_routes(running: Running):
     assert running.client.get("/api/export/videos").json()["state"] == "idle"
     assert running.client.get("/api/export/videos/download").status == 404

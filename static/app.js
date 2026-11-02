@@ -15,6 +15,7 @@
  * DOM through textContent only.
  */
 
+import { exportLabel, exportRequest, groupBySite, groupState, setGroup, videoCounts } from './export_picker.js';
 import {
   CROP_SIZE,
   PHASE_LEGEND,
@@ -29,7 +30,6 @@ import {
   discardedText,
   cropRect,
   endSentence,
-  exportSummary,
   filterByName,
   filterSpecies,
   formatBytes,
@@ -92,6 +92,9 @@ const MUTATION_HEADER = 'X-Screener';
 const WATCH_SAVE_MS = 5000;
 /** How often the page asks how far the video export has come. */
 const VIDEO_EXPORT_POLL_MS = 3000;
+
+/** Where this browser keeps the videos left out of the export. */
+const EXPORT_UNCHECKED_STORAGE = 'export-unchecked';
 /** The compare view: the column's share of the window before any drag, the photo's height per width, and the caption. */
 const COMPARE_COLUMN_SHARE = 0.32;
 const COMPARE_PHOTO_RATIO = 0.72;
@@ -220,6 +223,9 @@ const runtime = {
   videoExportTimer: 0,
   videoExportWatched: false,
   videoExportRun: null,
+  exportTitle: '',
+  exportVideos: [],
+  exportUnchecked: new Set(),
   guideClosedForRoom: false,
   loadToken: 0,
   queryEditedAt: -Infinity,
@@ -279,7 +285,10 @@ const dom = {
   currentVideo: byId('current-video'),
   annotator: byId('annotator'),
   exportButton: byId('export'),
-  exportVideos: byId('export-videos'),
+  exportPicker: byId('export-picker'),
+  exportClose: byId('export-close'),
+  exportList: byId('export-list'),
+  exportGo: byId('export-go'),
   helpToggle: byId('help-toggle'),
   help: byId('help'),
   helpClose: byId('help-close'),
@@ -3525,23 +3534,96 @@ async function saveAnnotator() {
 }
 
 /**
- * Ask the server for the export package and show where it went.
- * @returns {Promise<void>} Settles after the server wrote or refused the package.
+ * Read which videos this browser left out last time.
+ * @returns {Set<string>} Their keys, or none when the browser kept nothing.
  */
-async function exportPackage() {
-  dom.exportButton.disabled = true;
-  toast('Preparing the export.', 'info', LONG_TOAST_MS);
+function readExportUnchecked() {
   try {
-    const answer = await request('POST', '/api/export', {});
-    const link = el('a', { attrs: { href: answer.url, download: answer.name } });
-    document.body.append(link);
-    link.click();
-    link.remove();
-    toast(exportSummary(answer), 'ok', LONG_TOAST_MS);
+    return new Set(JSON.parse(localStorage.getItem(EXPORT_UNCHECKED_STORAGE)) || []);
   } catch (error) {
-    toast(`The export failed. ${endSentence(error.message)}`, 'error', LONG_TOAST_MS);
-  } finally {
-    dom.exportButton.disabled = false;
+    return new Set();
+  }
+}
+
+/**
+ * Keep the videos left out for the next export in this browser, and show the change.
+ * @param {Set<string>} unchecked Their keys.
+ */
+function setExportUnchecked(unchecked) {
+  runtime.exportUnchecked = unchecked;
+  try {
+    localStorage.setItem(EXPORT_UNCHECKED_STORAGE, JSON.stringify([...unchecked]));
+  } catch (error) {
+    // The choice still holds until the page reloads.
+  }
+  renderExportPicker();
+}
+
+/**
+ * Draw one checkbox row of the picker.
+ * @param {string} name The row's name.
+ * @param {string} counts The row's counts.
+ * @param {'all'|'some'|'none'} choice How much of the row is checked.
+ * @param {function(boolean): void} onChange Takes the new checked state.
+ * @param {string} rowClass The class of the row.
+ * @returns {HTMLElement} The row.
+ */
+function exportRow(name, counts, choice, onChange, rowClass) {
+  const box = el('input', { attrs: { type: 'checkbox', 'aria-label': name } });
+  box.checked = choice === 'all';
+  box.indeterminate = choice === 'some';
+  box.addEventListener('change', () => onChange(box.checked));
+  return el('label', { class: rowClass }, [box, el('span', { text: name }), el('span', { class: 'export-counts', text: counts })]);
+}
+
+/** Draw the picker from the videos on offer and the ones left out. */
+function renderExportPicker() {
+  const videos = runtime.exportVideos;
+  const unchecked = runtime.exportUnchecked;
+  if (!videos.length) {
+    dom.exportList.replaceChildren(el('p', { class: 'empty', text: 'No sightings yet.' }));
+  } else {
+    dom.exportList.replaceChildren(...groupBySite(videos).flatMap((group) => [
+      exportRow(
+        group.site,
+        `${group.videos.length} video${group.videos.length === 1 ? '' : 's'}`,
+        groupState(group.videos, unchecked),
+        (checked) => setExportUnchecked(setGroup(group.videos, unchecked, checked)),
+        'export-row export-site',
+      ),
+      ...group.videos.map((video) => exportRow(
+        video.transect,
+        videoCounts(video),
+        unchecked.has(video.key) ? 'none' : 'all',
+        (checked) => setExportUnchecked(setGroup([video], unchecked, checked)),
+        'export-row',
+      )),
+    ]));
+  }
+  const none = videos.every((video) => unchecked.has(video.key));
+  dom.exportGo.disabled = none;
+  dom.exportGo.textContent = exportLabel(videos, unchecked);
+}
+
+/**
+ * Open or close the export picker. Opening reads the videos with sightings again.
+ * @param {boolean} [open] True opens, false closes, and no value flips the picker.
+ * @returns {Promise<void>} Settles after the picker shows the videos or the error.
+ */
+async function toggleExportPicker(open) {
+  const show = open === undefined ? dom.exportPicker.hidden : open;
+  dom.exportPicker.hidden = !show;
+  dom.exportButton.setAttribute('aria-expanded', String(show));
+  if (!show) {
+    return;
+  }
+  try {
+    runtime.exportVideos = (await request('GET', '/api/export/choices')).videos;
+    runtime.exportUnchecked = readExportUnchecked();
+    renderExportPicker();
+  } catch (error) {
+    dom.exportGo.disabled = true;
+    dom.exportList.replaceChildren(el('p', { class: 'empty', text: `The videos did not load. ${endSentence(error.message)}` }));
   }
 }
 
@@ -3550,15 +3632,16 @@ async function exportPackage() {
  * @returns {Promise<void>} Settles after the job started or the error shows.
  */
 async function startVideoExport() {
-  dom.exportVideos.disabled = true;
+  toggleExportPicker(false);
+  dom.exportButton.disabled = true;
   try {
-    const status = await request('POST', '/api/export/videos', {});
-    toast('Rendering the videos. You can keep working.', 'info');
+    const status = await request('POST', '/api/export/videos', exportRequest(runtime.exportVideos, runtime.exportUnchecked));
+    toast('Preparing the export with videos. You can keep working.', 'info');
     runtime.videoExportRun = status.run;
     followVideoExport(status);
   } catch (error) {
-    dom.exportVideos.disabled = false;
-    toast(`The video export did not start. ${endSentence(error.message)}`, 'error', LONG_TOAST_MS);
+    dom.exportButton.disabled = false;
+    toast(`The export did not start. ${endSentence(error.message)}`, 'error', LONG_TOAST_MS);
   }
 }
 
@@ -3570,17 +3653,18 @@ function followVideoExport(status) {
   window.clearTimeout(runtime.videoExportTimer);
   if (status.state === 'running') {
     const share = Math.round(((status.done + status.fraction) / Math.max(1, status.total)) * 100);
-    dom.exportVideos.disabled = true;
-    dom.exportVideos.textContent = `Videos ${status.done + 1 > status.total ? status.total : status.done + 1}/${status.total} (${share}%)`;
-    dom.exportVideos.title = status.message ? `Working on ${status.message}.` : 'Preparing the videos.';
+    dom.exportButton.disabled = true;
+    dom.exportButton.textContent = `Export ${status.done + 1 > status.total ? status.total : status.done + 1}/${status.total} (${share}%)`;
+    dom.exportButton.title = status.message ? `Working on ${status.message}.` : 'Preparing the videos.';
     runtime.videoExportTimer = window.setTimeout(pollVideoExport, VIDEO_EXPORT_POLL_MS);
     return;
   }
-  dom.exportVideos.disabled = false;
-  dom.exportVideos.textContent = 'Export videos';
+  dom.exportButton.disabled = false;
+  dom.exportButton.textContent = 'Export';
+  dom.exportButton.title = runtime.exportTitle;
   // A zip from another run is an older export, left when the app restarted during this one.
   if (runtime.videoExportWatched && status.state === 'done' && status.run !== runtime.videoExportRun) {
-    toast('The video export stopped when the app restarted. Click Export videos to finish it.', 'error', LONG_TOAST_MS);
+    toast('The export stopped when the app restarted. Click Export to finish it.', 'error', LONG_TOAST_MS);
   } else if (runtime.videoExportWatched && status.state === 'done') {
     const link = el('a', { attrs: { href: '/api/export/videos/download', download: status.name } });
     document.body.append(link);
@@ -3588,7 +3672,7 @@ function followVideoExport(status) {
     link.remove();
     toast(`Downloading ${status.name}.`, 'ok', LONG_TOAST_MS);
   } else if (runtime.videoExportWatched && status.state === 'failed') {
-    toast(`The video export failed. ${endSentence(status.message)}`, 'error', LONG_TOAST_MS);
+    toast(`The export failed. ${endSentence(status.message)}`, 'error', LONG_TOAST_MS);
   }
   runtime.videoExportWatched = false;
 }
@@ -4222,6 +4306,15 @@ function onKeyDown(event) {
     event.preventDefault();
     return;
   }
+  if (key === 'Escape' && !dom.exportPicker.hidden) {
+    toggleExportPicker(false);
+    event.preventDefault();
+    return;
+  }
+  // Space and the arrow keys belong to a checkbox of the export picker.
+  if (dom.exportPicker.contains(event.target)) {
+    return;
+  }
   if (key === 'Escape' && !dom.coverage.hidden) {
     toggleCoverage(false);
     return true;
@@ -4691,8 +4784,9 @@ function wireEvents() {
   dom.sightings.addEventListener('click', onSightingsClick);
   dom.toLabel.addEventListener('click', onToLabelClick);
   dom.annotator.addEventListener('change', saveAnnotator);
-  dom.exportButton.addEventListener('click', exportPackage);
-  dom.exportVideos.addEventListener('click', startVideoExport);
+  dom.exportButton.addEventListener('click', () => toggleExportPicker());
+  dom.exportClose.addEventListener('click', () => toggleExportPicker(false));
+  dom.exportGo.addEventListener('click', startVideoExport);
   for (const list of [dom.pins, dom.tallyRows, dom.matches, dom.sightings]) {
     list.addEventListener('mouseover', onSpeciesHover);
   }
@@ -4776,6 +4870,7 @@ async function start() {
   if (roomForGuide()) {
     toggleGuide(true);
   }
+  runtime.exportTitle = dom.exportButton.title;
   // A reload during a video export picks its progress back up.
   request('GET', '/api/export/videos').then((status) => {
     if (status.state === 'running') {

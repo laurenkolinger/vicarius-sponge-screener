@@ -29,7 +29,7 @@ import sys
 from collections import Counter
 from datetime import date
 from pathlib import Path
-from typing import Dict, List, Mapping, NamedTuple, Sequence, Tuple
+from typing import Collection, Dict, List, Mapping, NamedTuple, Optional, Sequence, Tuple
 
 from screener.config import CROP_SIZE, PLAYABLE_EXTENSIONS, VERSION, VIDEO_EXTENSIONS
 from screener.keys import extension_of
@@ -455,7 +455,7 @@ def _fill_package(
         raise ExportError(f"{readme}: could not write the README: {error}") from error
 
 
-def export_package(store: ObservationStore, export_root: Path, today: date) -> ExportResult:
+def export_package(store: ObservationStore, export_root: Path, today: date, keys: Optional[Collection[str]] = None) -> ExportResult:
     """Write a dated export package of the labeled sightings and check that every image arrived.
 
     Later points are left out, with their images and tracks, and the README
@@ -470,6 +470,7 @@ def export_package(store: ObservationStore, export_root: Path, today: date) -> E
             export never creates it, because a missing folder usually means
             the drive is not connected.
         today: The date for the package name and the README.
+        keys: The videos to export, by S3 key, or None for every video.
 
     Returns:
         An ExportResult. Its ``path`` is the package folder,
@@ -504,6 +505,9 @@ def export_package(store: ObservationStore, export_root: Path, today: date) -> E
         screened = store.screened()
     except StoreError as error:
         raise ExportError(f"the store could not be read: {error}") from error
+    if keys is not None:
+        every_row = [row for row in every_row if row["S3Key"] in keys]
+        screened = [row for row in screened if row["S3Key"] in keys]
     rows = [row for row in every_row if row[LABEL_STATUS_COLUMN] == LABELED]
     unlabeled_left_out = len(every_row) - len(rows)
     if not rows and unlabeled_left_out:

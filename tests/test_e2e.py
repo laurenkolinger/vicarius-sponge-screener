@@ -791,7 +791,7 @@ def test_compare_view(drive: Callable[[str], Dict[str, Any]], app: RunningApp) -
 
 
 def test_export_download(drive: Callable[[str], Dict[str, Any]]) -> None:
-    """Export puts one zip in the browser's downloads and leaves the page where it was; the seal sits top left."""
+    """Export puts one zip with the tracked video in the browser's downloads and leaves the page where it was; the seal sits top left."""
     for old in OUT_DIR.glob("spongeGroundTruth_*"):
         old.unlink()
     facts = drive("export_download")["facts"]
@@ -805,6 +805,11 @@ def test_export_download(drive: Callable[[str], Dict[str, Any]]) -> None:
         names = opened.namelist()
     assert any(name.endswith("/observations.csv") for name in names)
     assert any("/frames/" in name for name in names) and any("/crops/" in name for name in names)
+    assert any("/videos_tracked/" in name and name.endswith("_tracked.mp4") for name in names)
+    assert facts["secondButton"] is True
+    assert facts["label"] == "Export"
+    assert facts["goWithNone"] == "Export 0 videos"
+    assert facts["goWithAll"] == "Export 1 video"
     downloads[0].unlink()
 
 

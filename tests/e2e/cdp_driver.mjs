@@ -1767,9 +1767,18 @@ const SCENARIOS = {
     await waitRows(s, 1);
     s.step('click Export');
     await clickElement(s, '#export');
+    await s.waitFor(`document.querySelectorAll('#export-list input').length === 2`, 'the export choices to list the site and its video');
+    s.step('leave the whole site out, then put it back');
+    await s.evaluate(`document.querySelector('#export-list input').click()`);
+    s.fact('goWithNone', await s.evaluate(`document.getElementById('export-go').disabled && document.getElementById('export-go').textContent`));
+    await s.evaluate(`document.querySelector('#export-list input').click()`);
+    s.fact('goWithAll', await s.evaluate(`document.getElementById('export-go').textContent`));
+    await clickElement(s, '#export-go');
     await s.waitFor(`${S}.state.lastToast && ${S}.state.lastToast.message.startsWith('Downloading ')`, 'the download to start');
     s.fact('toast', await s.evaluate(`${S}.state.lastToast.message`));
     s.fact('stillOnPage', await s.evaluate(`document.getElementById('export').disabled === false && location.pathname`));
+    s.fact('secondButton', await s.evaluate(`document.getElementById('export-videos') === null`));
+    s.fact('label', await s.evaluate(`document.getElementById('export').textContent`));
     s.fact('seal', await s.evaluate(`(() => { const img = document.querySelector('.brand-seal'); const box = img.getBoundingClientRect(); return { loaded: img.naturalWidth > 0, left: box.left, top: box.top, width: box.width }; })()`));
     await sleep(LAYOUT_SETTLE_MS * 2);
   },

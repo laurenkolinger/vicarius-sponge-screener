@@ -45,9 +45,8 @@
       <button id="coverage-toggle" type="button" class="button" aria-expanded="false" aria-controls="coverage"
               title="You open the coverage grid: the 8 target species in every video of this folder, the January counts, and how much of each video you watched.">Coverage</button>
       <button id="export" type="button" class="button"
-              title="You download one zip with the tables, frames, and crops.">Export</button>
-      <button id="export-videos" type="button" class="button"
-              title="You download the export plus every video with each ID drawn on its sponge. This renders in the background for several minutes per video.">Export videos</button>
+              aria-expanded="false" aria-controls="export-picker"
+              title="You choose the sites and videos, then download one zip with the tables, frames, crops, and videos with each ID drawn on its sponge.">Export</button>
       <button id="guide-toggle" type="button" class="button" aria-expanded="false" aria-controls="guide"
               title="You open the species guide: reference photos and the ID guide description for a species. The I key opens and closes it too.">Guide</button>
       <button id="help-toggle" type="button" class="button button-icon" aria-label="Keyboard shortcuts" aria-expanded="false" aria-controls="help"
@@ -185,6 +184,19 @@
           <p id="guide-notice" class="guide-notice" hidden></p>
           <p id="guide-text" class="guide-text"></p>
           <div id="guide-images" class="guide-images"></div>
+        </div>
+
+        <div id="export-picker" class="help export-picker" role="dialog" aria-label="Choose what to export" hidden>
+          <div class="help-head">
+            <h2 class="panel-title">Export</h2>
+            <button id="export-close" type="button" class="button button-icon" aria-label="Close the export choices"
+                    title="You close these choices. The Escape key does the same.">
+              <svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg>
+            </button>
+          </div>
+          <div id="export-list"></div>
+          <button id="export-go" type="button" class="button export-go"
+                  title="You download one zip with these videos and their tables, frames, and crops. A video with new sightings renders for several minutes while you keep working.">Export</button>
         </div>
 
         <div id="coverage" class="help coverage" role="dialog" aria-label="Coverage of the target species" hidden>

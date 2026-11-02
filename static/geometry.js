@@ -988,23 +988,6 @@ export function sightingsCount(rows) {
 }
 
 /**
- * Word the toast of a finished export.
- * @param {{observations: number, path: string, unlabeled_left_out: ?number}} answer The
- *   answer of POST /api/export.
- * @returns {string} How many sightings the package holds, how many Later points it left
- *   out when there are any, and the folder last in a sentence of its own, with no period
- */
-export function exportSummary(answer) {
-  const count = Number(answer.observations) || 0;
-  const left = Number(answer.unlabeled_left_out) || 0;
-  const parts = [`Downloading ${answer.name}: ${count} ${count === 1 ? 'sighting' : 'sightings'}.`];
-  if (left > 0) {
-    parts.push(`${left} review ${left === 1 ? 'point' : 'points'} left out.`);
-  }
-  return parts.join(' ');
-}
-
-/**
  * Find the most recent unsaved pick of one video, the one Z discards.
  * @param {Array<{key: string, order: number}>} saves The unsaved picks; order counts up with
  *   every pick.

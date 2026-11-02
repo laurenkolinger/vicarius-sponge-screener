@@ -211,9 +211,9 @@ Press C or click **Compare** in the guide for one photo of each species, side by
 
 Drag the edge between any two panes to resize them, or focus the edge and use the arrow keys. Double-click an edge for the default size. The app remembers your sizes in this browser.
 
-## Export videos
+## Export
 
-**Export** downloads the tables, frames, and crops in about a second. **Export videos** downloads all of that plus each video with a sighting, in `videos_tracked/`, with every ID and species code drawn on its tracked position in the phase colors. Review points show in amber. Rendering runs in the background for a few minutes per video while you keep working, and the browser downloads the zip when it finishes. A video whose sightings have not changed reuses its last render.
+**Export** opens a list of the sites and videos with sightings. Uncheck what you want left out, and the app remembers that in this browser. You then download one zip with the tables, frames, crops, and each chosen video, in `videos_tracked/`, with every ID and species code drawn on its tracked position in the phase colors. Review points show in amber on the videos and stay out of the tables. Rendering runs in the background for a few minutes per video while you keep working, and the browser downloads the zip when it finishes. A video whose sightings have not changed reuses its last render.
 
 ## Add a genus or species
 
@@ -250,7 +250,8 @@ same time.
 - `data/settings.json`: annotator initials and pinned species.
 - `cache/`: video chunks (capped at 60 GB, oldest removed first), converted
   files, and the bucket listing.
-- Export downloads `spongeGroundTruth_<date>.zip` through the browser, with
+- Export downloads `spongeGroundTruth_with_videos_<date>.zip` through the browser, or
+  `spongeGroundTruth_with_videos_<site>_<date>.zip` for part of the videos, with
   `observations.csv`, `videos_screened.csv`, `tracks.csv` (one row per track
   point of each labeled sighting: ID, SpeciesCode, TimeSeconds, X, Y, the box
   centered on X and Y for a box sighting, and Score), every referenced image,

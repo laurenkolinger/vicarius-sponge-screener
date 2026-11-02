@@ -1,4 +1,4 @@
-"""The background job behind Export videos: one zip with the package and marked videos.
+"""The background job behind Export: one zip with the package and marked videos.
 
 Rendering takes minutes per video, so it runs apart from the requests. A video whose sightings
 have not changed reuses its last render.
@@ -31,8 +31,8 @@ class VideoExporter:
         folder: Path,
         python: Path,
         worker: Path,
-        collect: Callable[[], List[Dict[str, Any]]],
-        build_package: Callable[[Path], Path],
+        collect: Callable[[Optional[List[str]]], List[Dict[str, Any]]],
+        build_package: Callable[[Path, Optional[List[str]]], Path],
         zip_package: Callable[[Path], Path],
     ) -> None:
         """Remember the tools. Nothing starts until ``start``.
@@ -41,8 +41,10 @@ class VideoExporter:
             folder: The folder for renders and the finished zip.
             python: The Python that has OpenCV.
             worker: screener/annotate_worker.py.
-            collect: Returns one ``{"name", "source", "marks"}`` per video with sightings.
-            build_package: Writes the regular export package into a folder and returns it.
+            collect: Takes the chosen keys, or None for all, and returns one
+                ``{"name", "source", "marks"}`` per chosen video with sightings.
+            build_package: Writes the regular export package of the chosen keys into a
+                folder and returns it.
             zip_package: Packs a package folder and returns the zip beside it.
         """
         self._folder = Path(folder)
@@ -73,8 +75,12 @@ class VideoExporter:
         with self._lock:
             self._status.update(fields)
 
-    def start(self) -> Dict[str, Any]:
+    def start(self, keys: Optional[List[str]] = None, label: str = "") -> Dict[str, Any]:
         """Start the job unless it is already running.
+
+        Args:
+            keys: The videos to export, by S3 key, or None for every video.
+            label: A word for the zip's name, such as a site.
 
         Returns:
             The state.
@@ -88,7 +94,7 @@ class VideoExporter:
             if not self._python.exists():
                 raise ValueError(f"videos: tracking is not set up, so {self._python} is missing")
             self._status = {"state": "running", "run": uuid.uuid4().hex, "done": 0, "total": 0, "fraction": 0.0, "message": "", "name": ""}
-        thread = threading.Thread(target=self._run, name="video-export", daemon=True)
+        thread = threading.Thread(target=self._run, args=(keys, label), name="video-export", daemon=True)
         thread.start()
         return self.status()
 
@@ -145,20 +151,26 @@ class VideoExporter:
                 raise RuntimeError(f"{video['name']}: {errors.read().decode('utf-8', 'replace')[-ERROR_TAIL:].strip()}")
         os.replace(partial, target)
 
-    def _run(self) -> None:
-        """Do the whole job, reporting any failure in the state."""
+    def _run(self, keys: Optional[List[str]], label: str) -> None:
+        """Do the whole job, reporting any failure in the state.
+
+        Args:
+            keys: The videos to export, or None for every video.
+            label: A word for the zip's name, or nothing.
+        """
         building = self._folder / BUILD_FOLDER
         rendered = self._folder / RENDERED_FOLDER
         try:
             rendered.mkdir(parents=True, exist_ok=True)
             shutil.rmtree(building, ignore_errors=True)
             building.mkdir(parents=True)
-            videos = self._collect()
+            videos = self._collect(keys)
             self._update(total=len(videos))
-            package = self._build_package(building)
+            package = self._build_package(building, keys)
             target_folder = package / VIDEOS_IN_PACKAGE
             target_folder.mkdir()
             keep = set()
+            stems = {Path(video["name"]).stem for video in videos}
             for index, video in enumerate(videos):
                 self._update(done=index, fraction=0.0, message=video["name"])
                 # A converted copy has its own frames, so it gets its own render.
@@ -173,13 +185,15 @@ class VideoExporter:
                 os.link(render, target_folder / f"{stem}_{index + 1:02d}_tracked.mp4" if (target_folder / f"{stem}_tracked.mp4").exists() else target_folder / f"{stem}_tracked.mp4")
             self._update(done=len(videos), fraction=1.0, message="Zipping")
             built = self._zip_package(package)
-            archive = self._folder / f"{ARCHIVE_PREFIX}{built.stem.rsplit('_', 1)[-1]}.zip"
+            scope = f"{label}_" if label else ""
+            archive = self._folder / f"{ARCHIVE_PREFIX}{scope}{built.stem.rsplit('_', 1)[-1]}.zip"
             os.replace(built, archive)
             for older in self._folder.glob(f"{ARCHIVE_PREFIX}*.zip"):
                 if older != archive:
                     older.unlink()
+            # A part-way export keeps the renders of the videos it left out.
             for stale in rendered.glob("*.mp4"):
-                if stale.name not in keep:
+                if stale.name not in keep and (keys is None or stale.name.split("_tracked.")[0] in stems):
                     stale.unlink()
             self._update(state="done", name=archive.name, message="")
         except Exception as error:  # noqa: BLE001 - the page shows any failure of the job
