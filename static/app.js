@@ -17,6 +17,7 @@
 
 import {
   CROP_SIZE,
+  PHASE_LEGEND,
   PIN_KEYS,
   QUADRANT_PHRASES,
   SPEEDS,
@@ -79,6 +80,7 @@ import {
 } from './wheel.js';
 import { createWheel } from './wheel_view.js';
 import { createScrubber } from './scrub.js';
+import { createPanes } from './panes.js';
 import { createWatchTracker, gapSentence, targetCell, videoLabel, watchedText } from './coverage.js';
 import { markAt, marksAt, readTrackAnswer } from './track_math.js';
 
@@ -88,6 +90,12 @@ const ROOT_PREFIX = 'TCRMP_video_ondeck/';
 const MUTATION_HEADER = 'X-Screener';
 /** How often the page saves the stretches watched while a video plays. */
 const WATCH_SAVE_MS = 5000;
+/** The compare view: the column's share of the window before any drag, the photo's height per width, and the caption. */
+const COMPARE_COLUMN_SHARE = 0.32;
+const COMPARE_PHOTO_RATIO = 0.72;
+const COMPARE_CAPTION_PX = 30;
+/** The fallback species has no look of its own, so it has no panel. */
+const UNKNOWN_CODE = 'UNKN';
 /** Below this window width a docked guide would squeeze the video, so the guide floats and starts closed. */
 const GUIDE_DOCK_MIN_WIDTH = 1100;
 const JPEG_QUALITY = 0.95;
@@ -145,6 +153,8 @@ const STORAGE = {
   grid: 'screener.gridShown',
   deck: 'screener.deck',
   guideDock: 'screener.guideDock',
+  panes: 'screener.panes',
+  compare: 'screener.compare',
   speed: 'screener.speed.v2',
 };
 const IDLE_TEXT = 'Pick a video from the list on the left. Then click a sponge and pick its species in the wheel.';
@@ -281,6 +291,8 @@ const dom = {
   guideCount: byId('guide-count'),
   guideText: byId('guide-text'),
   guideImages: byId('guide-images'),
+  guideCompare: byId('guide-compare'),
+  comparePhases: byId('compare-phases'),
   staleBadge: byId('stale-badge'),
   breadcrumb: byId('breadcrumb'),
   search: byId('search'),
@@ -3527,8 +3539,20 @@ async function exportPackage() {
   }
 }
 
+/** The resizable panes, set up when the page starts. */
+let panes = null;
+
 /** The species guide: reference photos and the ID guide text, served from /guide/. */
-const guide = { data: null, code: null, error: '', loading: null };
+const guide = {
+  data: null,
+  code: null,
+  error: '',
+  loading: null,
+  view: 'species',
+  phases: new Set(['original', 'added']),
+  crops: null,
+  drawn: null,
+};
 
 /**
  * Load guide.json once. A missing guide leaves a message instead of photos.
@@ -3575,6 +3599,26 @@ function showGuide(code, open = true) {
   } else if (!dom.guide.hidden) {
     renderGuide();
   }
+}
+
+/** Bring back the view and the phases from the last visit. */
+function restoreCompare() {
+  let stored = null;
+  try {
+    stored = JSON.parse(storageGet(STORAGE.compare));
+  } catch (error) {
+    stored = null;
+  }
+  if (stored && Array.isArray(stored.phases)) {
+    guide.phases = new Set(stored.phases);
+    for (const chip of dom.comparePhases.children) {
+      chip.setAttribute('aria-pressed', String(guide.phases.has(chip.dataset.tier)));
+    }
+  }
+  guide.view = stored && stored.view === 'compare' ? 'compare' : 'species';
+  dom.guide.dataset.view = guide.view;
+  dom.guideCompare.setAttribute('aria-pressed', String(guide.view === 'compare'));
+  fitCompareColumn();
 }
 
 /** Dock or float the guide from the annotator's choice and the room in the window. */
@@ -3638,6 +3682,11 @@ function toggleGuide(open) {
   const show = open === undefined ? dom.guide.hidden : open;
   dom.guide.hidden = !show;
   dom.guideToggle.setAttribute('aria-expanded', show ? 'true' : 'false');
+  // The guide takes room from or gives room to the panes beside it.
+  if (panes) {
+    panes.refit();
+    fitCompareColumn();
+  }
   if (show) {
     if (!guide.code) {
       guide.code = state.pins[PIN_KEYS[0]] || (state.species[0] && state.species[0].code) || null;
@@ -3652,6 +3701,11 @@ function renderGuide() {
   if (dom.guide.hidden) {
     return;
   }
+  if (guide.view === 'compare') {
+    renderCompare();
+    return;
+  }
+  guide.drawn = null;
   dom.guideImages.textContent = '';
   if (guide.error) {
     dom.guideText.textContent = '';
@@ -3697,14 +3751,182 @@ function renderGuide() {
       attrs: { role: 'button', tabindex: '0' },
       title: `You enlarge this photo of ${item.name}. Click the large photo or press Escape to shrink it.`,
     }, [img]);
+    const chosen = known && (known.exemplar === file || (!known.exemplar && file === item.images[0]));
+    const star = el('button', {
+      class: 'guide-star',
+      text: chosen ? '\u2605' : '\u2606',
+      title: `You use this photo for ${item.name} in Compare.`,
+      attrs: { type: 'button', 'aria-label': `Use this photo for ${item.name} in Compare`, 'aria-pressed': String(Boolean(chosen)) },
+    });
+    star.addEventListener('click', (event) => {
+      event.stopPropagation();
+      chooseExemplar(item.code, file);
+    });
+    tile.append(star);
     tile.addEventListener('click', () => enlargeGuideImage(src, item.name));
     tile.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' || event.key === ' ') {
+      if (event.target === tile && (event.key === 'Enter' || event.key === ' ')) {
         event.preventDefault();
         enlargeGuideImage(src, item.name);
       }
     });
     dom.guideImages.append(tile);
+  }
+}
+
+/**
+ * Save the photo that stands for a species in the compare view.
+ * @param {string} code The species code.
+ * @param {string} file The photo's file name.
+ * @returns {Promise<void>} Settles after the guide shows the choice or the error.
+ */
+async function chooseExemplar(code, file) {
+  try {
+    applySettings(await request('POST', '/api/guide/exemplar', { code, file }));
+    guide.drawn = null;
+    renderGuide();
+  } catch (error) {
+    toast(`The photo was not saved. ${endSentence(error.message)}`, 'error');
+  }
+}
+
+/**
+ * Turn the compare view on or off, opening the guide when it is closed.
+ * @param {boolean} [on] The wanted state; omitted flips it.
+ */
+function setCompare(on = dom.guide.hidden || guide.view !== 'compare') {
+  guide.view = on ? 'compare' : 'species';
+  guide.drawn = null;
+  dom.guide.dataset.view = guide.view;
+  dom.guideCompare.setAttribute('aria-pressed', String(on));
+  saveCompare();
+  fitCompareColumn();
+  if (dom.guide.hidden) {
+    toggleGuide(true);
+  } else {
+    renderGuide();
+  }
+}
+
+/** Remember the view and the phases shown. */
+function saveCompare() {
+  storageSet(STORAGE.compare, JSON.stringify({ view: guide.view, phases: [...guide.phases] }));
+}
+
+/** Give the compare view a wider column until the annotator chooses a width by dragging. */
+function fitCompareColumn() {
+  if (panes.isSized('guide')) {
+    return;
+  }
+  if (guide.view === 'compare') {
+    document.documentElement.style.setProperty('--guide-dock-width', `${panes.clamp('guide', window.innerWidth * COMPARE_COLUMN_SHARE)}px`);
+  } else {
+    document.documentElement.style.removeProperty('--guide-dock-width');
+  }
+}
+
+/** Load the crops that stand in for species with no guide photo, once per page. */
+async function loadCompareCrops() {
+  guide.crops = new Map();
+  try {
+    const answer = await request('GET', '/api/observations?status=labeled');
+    for (const row of answer.rows || []) {
+      if (row.SpeciesCode && row.CropFileName && !guide.crops.has(row.SpeciesCode)) {
+        guide.crops.set(row.SpeciesCode, `/media/crops/${encodeURIComponent(row.CropFileName)}`);
+      }
+    }
+  } catch (error) {
+    toast(`Your own crops did not load. ${endSentence(error.message)}`, 'error');
+  }
+  guide.drawn = null;
+  renderGuide();
+}
+
+/**
+ * Find the photo that stands for a species.
+ * @param {object} species The species.
+ * @returns {?string} The photo address, or null when there is none.
+ */
+function comparePhoto(species) {
+  const entry = (guide.data || []).find((item) => item.code === species.code);
+  const images = entry ? entry.images : [];
+  if (images.length > 0) {
+    const file = images.includes(species.exemplar) ? species.exemplar : images[0];
+    return `/guide/${encodeURIComponent(species.code)}/${encodeURIComponent(file)}`;
+  }
+  return guide.crops ? guide.crops.get(species.code) || null : null;
+}
+
+/**
+ * Build one panel of the compare view.
+ * @param {object} species The species.
+ * @returns {HTMLElement} The panel.
+ */
+function compareTile(species) {
+  const src = comparePhoto(species);
+  const photo = src
+    ? el('button', {
+      class: 'compare-photo',
+      title: `You enlarge this photo of ${species.name}.`,
+      attrs: { type: 'button' },
+    }, [el('img', { attrs: { src, alt: species.name, loading: 'lazy' } })])
+    : el('div', { class: 'compare-none', text: 'No photo' });
+  if (src) {
+    photo.addEventListener('click', () => enlargeGuideImage(src, species.name));
+  }
+  const name = el('button', {
+    class: 'compare-name',
+    title: `You open every photo and the description of ${species.name}.`,
+    attrs: { type: 'button' },
+  }, [el('span', { class: 'compare-code', text: species.code }), abbreviatedName(species.name)]);
+  name.addEventListener('click', () => {
+    setCompare(false);
+    showGuide(species.code);
+  });
+  return el('div', {
+    class: 'compare-tile',
+    data: { code: species.code, tier: speciesTier(species.part) },
+  }, [photo, name]);
+}
+
+/** Draw the compare view, or only move its highlight when the panels are already drawn. */
+function renderCompare() {
+  if (guide.error || !guide.data) {
+    guide.drawn = null;
+    dom.guideCount.textContent = '';
+    dom.guideImages.textContent = '';
+    dom.guideImages.append(el('p', { class: 'guide-empty', text: guide.error ? `The guide did not load. ${guide.error}` : 'Loading the guide.' }));
+    return;
+  }
+  const order = PHASE_LEGEND.map((item) => item.tier).filter((tier) => guide.phases.has(tier));
+  const shown = order.flatMap((tier) => state.species.filter((item) => speciesTier(item.part) === tier && item.code !== UNKNOWN_CODE));
+  const signature = shown.map((item) => `${item.code}:${comparePhoto(item)}`).join('|');
+  if (signature !== guide.drawn) {
+    guide.drawn = signature;
+    dom.guideNotice.hidden = true;
+    dom.guideCount.textContent = `${shown.length} species`;
+    dom.guideImages.replaceChildren(...shown.map(compareTile));
+    if (guide.crops === null && shown.some((item) => !comparePhoto(item))) {
+      loadCompareCrops();
+    }
+  }
+  fitCompareRows();
+  for (const tile of dom.guideImages.children) {
+    const current = tile.dataset.code === guide.code;
+    tile.dataset.current = String(current);
+    if (current) {
+      tile.scrollIntoView({ block: 'nearest' });
+    }
+  }
+}
+
+/** Keep the compare photos in proportion as the column changes width. */
+function fitCompareRows() {
+  const tile = dom.guideImages.querySelector('.compare-tile');
+  // A hidden guide measures zero, which would collapse the photos.
+  if (tile && tile.getBoundingClientRect().width > 0) {
+    const height = Math.round(tile.getBoundingClientRect().width * COMPARE_PHOTO_RATIO) + COMPARE_CAPTION_PX;
+    dom.guideImages.style.setProperty('--compare-row', `${height}px`);
   }
 }
 
@@ -4235,7 +4457,7 @@ function onScreeningKey(event, key) {
   }
   const letter = key.length === 1 ? key.toLowerCase() : '';
   if (event.repeat) {
-    return ['g', 'z', 'd', 'n', 'i', 'f', 'p'].includes(letter);
+    return ['g', 'z', 'n', 'i', 'c', 'f', 'p'].includes(letter);
   }
   if (letter === 'g') {
     setGrid(!state.grid);
@@ -4251,6 +4473,10 @@ function onScreeningKey(event, key) {
   }
   if (letter === 'i') {
     toggleGuide();
+    return true;
+  }
+  if (letter === 'c') {
+    setCompare();
     return true;
   }
   if (letter === 'f') {
@@ -4297,8 +4523,13 @@ function wireEvents() {
   new ResizeObserver(() => {
     placeToasts();
     relayoutWheel();
+    fitCompareRows();
   }).observe(dom.stage);
-  window.addEventListener('resize', applyGuideDock);
+  window.addEventListener('resize', () => {
+    applyGuideDock();
+    panes.refit();
+    fitCompareColumn();
+  });
   window.addEventListener('beforeunload', onBeforeUnload);
 
   dom.breadcrumb.addEventListener('click', onFolderClick);
@@ -4400,6 +4631,21 @@ function wireEvents() {
   for (const list of [dom.pins, dom.tallyRows, dom.matches, dom.sightings]) {
     list.addEventListener('mouseover', onSpeciesHover);
   }
+  dom.guideCompare.addEventListener('click', () => setCompare());
+  dom.comparePhases.addEventListener('click', (event) => {
+    const chip = event.target.closest('.compare-phase');
+    if (chip) {
+      const on = chip.getAttribute('aria-pressed') !== 'true';
+      chip.setAttribute('aria-pressed', String(on));
+      if (on) {
+        guide.phases.add(chip.dataset.tier);
+      } else {
+        guide.phases.delete(chip.dataset.tier);
+      }
+      saveCompare();
+      renderGuide();
+    }
+  });
   dom.coverageToggle.addEventListener('click', () => toggleCoverage());
   dom.coverageClose.addEventListener('click', () => toggleCoverage(false));
   dom.helpToggle.addEventListener('click', () => toggleHelp());
@@ -4429,6 +4675,11 @@ function restorePreferences() {
   setSpeed(SPEEDS.includes(speed) ? speed : DEFAULT_SPEED);
   setDeck(storageGet(STORAGE.deck) === '1');
   setGuideDock(storageGet(STORAGE.guideDock) !== '0');
+  panes = createPanes({
+    load: () => storageGet(STORAGE.panes),
+    save: (text) => storageSet(STORAGE.panes, text),
+  }, fitCompareColumn);
+  restoreCompare();
 }
 
 /**

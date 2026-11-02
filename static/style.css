@@ -351,6 +351,7 @@ kbd {
 /* ------------------------------------------------------------ workspace */
 
 .workspace {
+  position: relative;
   display: grid;
   grid-template-columns: var(--left) minmax(0, 1fr) var(--right);
   min-height: 0;
@@ -606,6 +607,7 @@ kbd {
 /* The theater is what full screen shows: the stage over the transport row, with the
    wheel, the toasts, and the cards floating inside it. */
 .theater {
+  position: relative;
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
@@ -1102,6 +1104,7 @@ body[data-mode="marking"] .mark-summary {
 /* ------------------------------------------------------------ right panel */
 
 .log-section {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1112,13 +1115,13 @@ body[data-mode="marking"] .mark-summary {
 }
 
 .log-later {
-  flex: 0 1 auto;
-  max-height: 32%;
+  flex: var(--review-flex, 0 1 auto);
+  max-height: var(--review-max, 32%);
   border-top: 1px solid var(--line);
 }
 
 .log-tally {
-  flex: 1 1 48%;
+  flex: var(--tally-flex, 1 1 48%);
   border-top: 1px solid var(--line);
 }
 
@@ -1597,6 +1600,238 @@ body[data-mode="marking"] .mark-summary {
   }
 }
 
+/* A handle sits on the edge between two panes and shows a line under the pointer. */
+.pane-handle {
+  position: absolute;
+  z-index: 30;
+  touch-action: none;
+}
+
+.pane-handle::after {
+  content: "";
+  position: absolute;
+  background: transparent;
+  transition: background-color 80ms;
+}
+
+.pane-handle:hover::after,
+.pane-handle:focus-visible::after,
+body[data-resizing] .pane-handle::after {
+  background: var(--focus);
+}
+
+.pane-handle:focus-visible {
+  outline: none;
+}
+
+.pane-handle-x {
+  top: 0;
+  bottom: 0;
+  width: 9px;
+  cursor: col-resize;
+}
+
+.pane-handle-x::after {
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 3px;
+}
+
+.pane-handle-y {
+  top: -4px;
+  right: 0;
+  left: 0;
+  height: 9px;
+  cursor: row-resize;
+}
+
+.pane-handle-y::after {
+  top: 3px;
+  right: 0;
+  left: 0;
+  height: 3px;
+}
+
+#pane-left {
+  left: calc(var(--left) - 5px);
+}
+
+#pane-right {
+  right: calc(var(--right) - 4px);
+}
+
+#pane-guide {
+  right: calc(var(--guide-dock-width) - 4px);
+  display: none;
+}
+
+body[data-guide-dock="docked"] .theater:has(> #guide:not([hidden])) > #pane-guide {
+  display: block;
+}
+
+body[data-resizing="x"] {
+  cursor: col-resize;
+  user-select: none;
+}
+
+body[data-resizing="y"] {
+  cursor: row-resize;
+  user-select: none;
+}
+
+@media (max-width: 700px) {
+  .pane-handle {
+    display: none;
+  }
+}
+
+/* The compare view: one photo of each species, side by side. */
+.compare-phases {
+  display: none;
+  gap: 6px;
+  padding-bottom: 8px;
+}
+
+.compare-phase {
+  padding: 3px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--bg-2);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.compare-phase[aria-pressed="false"] {
+  background: transparent;
+  color: var(--text-3);
+}
+
+.compare-phase[aria-pressed="false"]::before {
+  opacity: 0.3;
+}
+
+#guide[data-view="compare"] .compare-phases {
+  display: flex;
+}
+
+#guide[data-view="compare"] .guide-pick,
+#guide[data-view="compare"] .guide-notice,
+#guide[data-view="compare"] .guide-text {
+  display: none;
+}
+
+#guide[data-view="compare"] .guide-images {
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  grid-auto-rows: var(--compare-row, 170px);
+}
+
+.compare-tile {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 2px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--bg-2);
+  overflow: hidden;
+}
+
+.compare-tile[data-tier="original"] {
+  border-color: var(--green);
+}
+
+.compare-tile[data-tier="added"] {
+  border-color: var(--mark);
+}
+
+.compare-tile[data-current="true"] {
+  outline: 3px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.compare-photo {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: var(--bg-0);
+  cursor: zoom-in;
+}
+
+.compare-photo img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.compare-none {
+  display: grid;
+  flex: 1 1 auto;
+  place-items: center;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.compare-name {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 7px;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  font-style: italic;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.compare-code {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-style: normal;
+  font-weight: 700;
+}
+
+.compare-tile[data-tier="original"] .compare-code {
+  color: var(--green);
+}
+
+.compare-tile[data-tier="added"] .compare-code {
+  color: var(--mark);
+}
+
+.guide-image {
+  position: relative;
+}
+
+.guide-star {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(16, 18, 22, 0.78);
+  color: #ffffff;
+  font-size: 16px;
+  line-height: 26px;
+  cursor: pointer;
+}
+
+.guide-star[aria-pressed="true"] {
+  color: var(--later);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .toast,
   .wheel {
@@ -1644,6 +1879,8 @@ body[data-guide-dock="docked"] .theater:has(> #guide:not([hidden])) > .transport
 
 body[data-guide-dock="docked"] #guide {
   position: static;
+  /* A grid item honors z-index even when static, which would put it over the pane handles. */
+  z-index: auto;
   grid-column: 2;
   grid-row: 1 / span 2;
   width: auto;

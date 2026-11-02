@@ -449,7 +449,7 @@ def test_species_and_settings_round_trip(running: Running):
     data = answer.json()
     assert data["annotator"] == config.DEFAULT_ANNOTATOR
     assert data["tally_target"] == config.TALLY_TARGET
-    assert data["species"][0] == {"code": "ACAU", "name": "Aplysina cauliformis", "part": "1", "name_changes": []}
+    assert data["species"][0] == {"code": "ACAU", "name": "Aplysina cauliformis", "part": "1", "name_changes": [], "exemplar": None}
     assert len(data["species"]) == 38
     assert data["pins"] == {
         "1": "ACAU", "2": "AFUL", "3": "CDEL", "4": "MLAE", "5": "CPLI",
@@ -2273,3 +2273,42 @@ def test_guide_that_cannot_take_a_species_leaves_the_list_unchanged(running: Run
     assert answer.status == 400 and answer.error.startswith("guide")
     assert not (running.data_dir / "custom_species.csv").exists()
     assert all(item["code"] != "CINA" for item in running.client.get("/api/species").json()["species"])
+
+
+def write_guide(running: Running) -> None:
+    """Give the running app a guide with two photos of one species."""
+    guide = running.data_dir / "guide"
+    guide.mkdir(exist_ok=True)
+    species = [{"code": "ACAU", "name": "Aplysina cauliformis", "part": "1", "description": "", "images": ["a.jpg", "b.jpg"]}]
+    (guide / "guide.json").write_text(json.dumps({"species": species}), encoding="utf-8")
+
+
+def test_exemplar_is_saved_and_answered(running: Running):
+    write_guide(running)
+    answer = running.client.post("/api/guide/exemplar", {"code": "ACAU", "file": "b.jpg"})
+    assert answer.status == 200, answer.error
+    species = {item["code"]: item for item in answer.json()["species"]}
+    assert species["ACAU"]["exemplar"] == "b.jpg" and species["AFUL"]["exemplar"] is None
+    assert json.loads((running.data_dir / "guide_exemplars.json").read_text(encoding="utf-8")) == {"ACAU": "b.jpg"}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"code": "ACAU", "file": "not-listed.jpg"},
+        {"code": "ZZZZ", "file": "a.jpg"},
+        {"code": "ACAU", "file": "../../secret"},
+        {"code": ["ACAU"], "file": "a.jpg"},
+    ],
+)
+def test_exemplar_must_be_a_listed_photo(running: Running, body: Dict[str, Any]):
+    write_guide(running)
+    answer = running.client.post("/api/guide/exemplar", body)
+    assert answer.status == 400 and answer.error.startswith("file")
+    assert not (running.data_dir / "guide_exemplars.json").exists()
+
+
+def test_damaged_exemplars_read_as_none(running: Running):
+    (running.data_dir / "guide_exemplars.json").write_text("{broken", encoding="utf-8")
+    species = running.client.get("/api/species").json()["species"]
+    assert all(item["exemplar"] is None for item in species)

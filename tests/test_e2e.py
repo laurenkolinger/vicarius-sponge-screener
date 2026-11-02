@@ -756,6 +756,40 @@ def test_old_name_search(drive: Callable[[str], Dict[str, Any]]) -> None:
     assert facts["rows"][0]["SpeciesCode"] == "ACOM"
 
 
+def test_panes_resize(drive: Callable[[str], Dict[str, Any]]) -> None:
+    """Handles resize every pane, the video keeps its room, sizes survive a reload, and a double-click resets."""
+    facts = drive("panes_resize")["facts"]
+    before, dragged = facts["before"], facts["dragged"]
+    assert abs(dragged["left"] - before["left"] - 60) <= 2, facts
+    assert abs(dragged["right"] - before["right"] - 50) <= 2, facts
+    assert abs(dragged["guide"] - before["guide"] - 70) <= 2, facts
+    assert abs(dragged["review"] - before["review"] - 40) <= 3, facts
+    assert facts["crushed"]["stage"] >= 250, facts["crushed"]
+    assert facts["guideSmallest"]["guide"] <= 222, facts["guideSmallest"]
+    assert abs(facts["afterReload"]["left"] - dragged["left"]) <= 2
+    assert abs(facts["afterReset"]["left"] - before["left"]) <= 2
+    assert abs(facts["keyboard"]["end"] - facts["keyboard"]["start"] - 16) <= 1
+
+
+def test_compare_view(drive: Callable[[str], Dict[str, Any]], app: RunningApp) -> None:
+    """C shows one panel per target species in phase order, follows the pointer, and uses the chosen photo."""
+    write_guide_fixture(app.data_dir, list(PINS.values()) + ["SAUR"])
+    facts = drive("compare_view")["facts"]
+    assert [code for code, _ in facts["tiles"]] == ["ACAU", "CDEL", "MLAE", "CPLI", "AFUL", "ACRA", "ACOM", "XMUT"]
+    assert [tier for _, tier in facts["tiles"]] == ["original"] * 4 + ["added"] * 4
+    assert facts["count"] == "8 species"
+    assert facts["imagesLoaded"].startswith("/guide/ACAU/")
+    assert facts["withPhase3"] > 8
+    assert facts["noPhases"] == [0, "0 species"]
+    assert facts["rowAfterReopen"] > 100
+    assert facts["largeAfterEnter"] is False
+    assert facts["current"] == "AFUL"
+    assert facts["openedSpecies"] == "ACAU"
+    assert facts["chosen"]
+    assert facts["panelPhoto"].endswith(facts["chosen"])
+    assert facts["viewAfterReload"] == "compare"
+
+
 def test_export_download(drive: Callable[[str], Dict[str, Any]]) -> None:
     """Export puts one zip in the browser's downloads and leaves the page where it was; the seal sits top left."""
     for old in OUT_DIR.glob("spongeGroundTruth_*"):

@@ -119,7 +119,7 @@ def load_custom_species(data_dir: Path, taken: Sequence[str]) -> List[Species]:
     return loaded
 
 
-def _replace_file(path: Path, write: Any) -> None:
+def replace_file(path: Path, write: Any) -> None:
     """Write a file through a temporary file, so a reader always sees a whole one.
 
     Args:
@@ -154,7 +154,7 @@ def save_custom_species(data_dir: Path, added: Sequence[Species]) -> None:
         writer.writerow(COLUMNS)
         writer.writerows((item.code, item.name) for item in added)
 
-    _replace_file(Path(data_dir) / CUSTOM_FILE, write)
+    replace_file(Path(data_dir) / CUSTOM_FILE, write)
 
 
 def add_to_guide(data_dir: Path, species: Species) -> None:
@@ -183,4 +183,4 @@ def add_to_guide(data_dir: Path, species: Species) -> None:
         guide["species"].append(
             {"code": species.code, "name": species.name, "part": "", "description": "", "source": "", "viewer_name": "", "images": []}
         )
-    _replace_file(path, lambda out: out.write(json.dumps(guide, indent=1, ensure_ascii=False) + "\n"))
+    replace_file(path, lambda out: out.write(json.dumps(guide, indent=1, ensure_ascii=False) + "\n"))

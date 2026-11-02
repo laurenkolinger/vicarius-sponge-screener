@@ -31,6 +31,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 from screener.config import KEY_PREFIX, MAX_BODY_BYTES, PLAYABLE_EXTENSIONS, TALLY_TARGET, TRACK_PYTHON, TRACK_WORKER, VERSION
 from screener.convert import Converter, ConvertError, ConvertStatus
 from screener.custom_species import add_to_guide, clean_name, load_custom_species, new_code, save_custom_species
+from screener.exemplars import choose_exemplar, load_exemplars
 from screener.export import ExportError, export_package
 from screener.keys import extension_of, quote_key, validate_key
 from screener.names import load_site_names
@@ -401,9 +402,16 @@ class ScreenerApp:
     def species_payload(self) -> Dict[str, Any]:
         """Lay out the species list, the pins, the annotator, and the tally target for the page."""
         current = self.settings()
+        exemplars = load_exemplars(self.data_dir)
         return {
             "species": [
-                {"code": item.code, "name": item.name, "part": item.part, "name_changes": self._name_changes.get(item.code, [])}
+                {
+                    "code": item.code,
+                    "name": item.name,
+                    "part": item.part,
+                    "name_changes": self._name_changes.get(item.code, []),
+                    "exemplar": exemplars.get(item.code),
+                }
                 for item in self._species
             ],
             "pins": current.pins,
@@ -960,6 +968,7 @@ class _Handler(BaseHTTPRequestHandler):
         "/api/health": {"GET": "_get_health"},
         "/api/catalog": {"GET": "_get_catalog"},
         "/api/species": {"GET": "_get_species", "POST": "_post_species"},
+        "/api/guide/exemplar": {"POST": "_post_exemplar"},
         "/api/settings": {"POST": "_post_settings"},
         "/api/observations": {"GET": "_get_observations", "POST": "_post_observation"},
         "/api/tally": {"GET": "_get_tally"},
@@ -1472,6 +1481,12 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _get_species(self, rest: str, query: Dict[str, List[str]]) -> None:
         """Answer the species list, the pins, the annotator, and the tally target."""
+        self._send_json(HTTP_OK, self.server.app.species_payload())
+
+    def _post_exemplar(self, rest: str, query: Dict[str, List[str]]) -> None:
+        """Choose the photo that stands for a species."""
+        body = self._object_body()
+        choose_exemplar(self.server.app.data_dir, self._body_field(body, "code"), self._body_field(body, "file"))
         self._send_json(HTTP_OK, self.server.app.species_payload())
 
     def _post_species(self, rest: str, query: Dict[str, List[str]]) -> None:

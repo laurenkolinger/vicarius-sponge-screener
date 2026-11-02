@@ -55,6 +55,10 @@
 
   <main class="workspace">
 
+    <div class="pane-handle pane-handle-x" id="pane-left" data-pane="left" role="separator" aria-orientation="vertical" tabindex="0"
+         aria-label="Resize the video list" title="Drag to resize. Double-click for the default size."></div>
+    <div class="pane-handle pane-handle-x" id="pane-right" data-pane="right" role="separator" aria-orientation="vertical" tabindex="0"
+         aria-label="Resize the sightings column" title="Drag to resize. Double-click for the default size."></div>
     <aside class="panel browser" aria-label="Video browser">
       <div class="panel-head">
         <h2 class="panel-title">Videos</h2>
@@ -149,6 +153,8 @@
 
         <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
 
+        <div class="pane-handle pane-handle-x" id="pane-guide" data-pane="guide" role="separator" aria-orientation="vertical" tabindex="0"
+             aria-label="Resize the guide" title="Drag to resize. Double-click for the default size."></div>
         <div id="guide" class="guide" role="dialog" aria-label="Species guide" hidden>
           <div class="guide-head">
             <h2 class="panel-title">Species guide</h2>
@@ -158,6 +164,8 @@
                       title="You pick the species to look at. A species you pick in the wheel or the mark bar moves this too."></select>
             </label>
             <span id="guide-count" class="guide-count"></span>
+            <button id="guide-compare" type="button" class="button button-toggle" aria-pressed="false"
+                    title="You compare one photo of each species side by side. The C key does the same.">Compare</button>
             <button id="guide-dock" type="button" class="button button-icon" aria-label="Dock the guide beside the video" aria-pressed="true"
                     title="You dock the guide in a column beside the video, so it never covers the picture, or let it float over the page. The app remembers your choice.">
               <svg class="icon" aria-hidden="true"><use href="#i-dock"></use></svg>
@@ -166,6 +174,11 @@
                     title="You close the guide. The Escape key and the I key do the same.">
               <svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg>
             </button>
+          </div>
+          <div id="compare-phases" class="compare-phases" role="group" aria-label="Phases to compare">
+            <button type="button" class="phase-chip compare-phase" data-tier="original" aria-pressed="true" title="You show or hide Phase 1.">Phase 1</button>
+            <button type="button" class="phase-chip compare-phase" data-tier="added" aria-pressed="true" title="You show or hide Phase 2.">Phase 2</button>
+            <button type="button" class="phase-chip compare-phase" data-tier="other" aria-pressed="false" title="You show or hide Phase 3.">Phase 3</button>
           </div>
           <p id="guide-notice" class="guide-notice" hidden></p>
           <p id="guide-text" class="guide-text"></p>
@@ -205,6 +218,7 @@
                 <div><dt><kbd>Home</kbd></dt><dd>Back to the start</dd></div>
                 <div><dt><kbd>F</kbd></dt><dd>Full screen on or off</dd></div>
                 <div><dt><kbd>P</kbd></dt><dd>Show or hide the species keys panel</dd></div>
+                <div><dt><kbd>C</kbd></dt><dd>Compare species side by side</dd></div>
                 <div><dt><kbd>G</kbd></dt><dd>Show or hide the grid and center line</dd></div>
                 <div><dt><kbd>Z</kbd></dt><dd>Undo the last pick: discard an unsaved one, else remove the last sighting</dd></div>
                 <div><dt><kbd>N</kbd></dt><dd>Open the next video in the list</dd></div>
@@ -283,6 +297,8 @@
         </div>
       </section>
       <section class="log-section log-later">
+        <div class="pane-handle pane-handle-y" data-pane="review" role="separator" aria-orientation="horizontal" tabindex="0"
+             aria-label="Resize the Review list" title="Drag to resize. Double-click for the default size."></div>
         <div class="panel-head">
           <h2 class="panel-title">Review</h2>
           <span id="to-label-count" class="count" title="Points to review, across every video. Click one to open it.">0</span>
@@ -293,6 +309,8 @@
         </div>
       </section>
       <section class="log-section log-tally">
+        <div class="pane-handle pane-handle-y" data-pane="tally" role="separator" aria-orientation="horizontal" tabindex="0"
+             aria-label="Resize the species tally" title="Drag to resize. Double-click for the default size."></div>
         <div class="panel-head">
           <h2 class="panel-title">Species tally</h2>
           <span id="tally-target" class="count" title="Each pinned species needs at least this many sightings across all videos.">target 3</span>

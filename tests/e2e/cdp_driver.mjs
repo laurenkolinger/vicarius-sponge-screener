@@ -1646,6 +1646,115 @@ const SCENARIOS = {
     s.fact('rows', await waitRows(s, 1));
   },
 
+  /** Drag each handle, reload, and double-click a handle back to its default. */
+  async panes_resize(s, config) {
+    await loadApp(s);
+    await openVideo(s, config, config.key2024);
+    const width = (selector) => `document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect().width`;
+    const height = (selector) => `document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect().height`;
+    const center = (id) => s.evaluate(`(() => { const box = document.querySelector(${JSON.stringify(id)}).getBoundingClientRect(); return { x: box.x + box.width / 2, y: box.y + box.height / 2 }; })()`);
+    const drag = async (id, dx, dy) => {
+      const from = await center(id);
+      await s.mouse('mouseMoved', from.x, from.y, { buttons: 0 });
+      await s.mouse('mousePressed', from.x, from.y, { buttons: 1 });
+      await s.mouse('mouseMoved', from.x + dx, from.y + dy, { buttons: 1 });
+      await s.mouse('mouseReleased', from.x + dx, from.y + dy, { buttons: 0 });
+      await sleep(STILL_MS);
+    };
+    const read = async () => ({
+      left: await s.evaluate(width('.browser')),
+      right: await s.evaluate(width('.log')),
+      guide: await s.evaluate(width('#guide')),
+      review: await s.evaluate(height('.log-later')),
+      stage: await s.evaluate(width('#stage')),
+    });
+    s.step('read the first sizes');
+    await sleep(LAYOUT_SETTLE_MS);
+    s.fact('before', await read());
+    s.step('drag the handles');
+    await drag('#pane-left', 60, 0);
+    await drag('#pane-right', -50, 0);
+    await drag('#pane-guide', -70, 0);
+    await drag('.log-later .pane-handle', 0, -40);
+    s.fact('dragged', await read());
+    s.step('try to crush the video');
+    await drag('#pane-guide', -2000, 0);
+    s.fact('crushed', await read());
+    await drag('#pane-guide', 2000, 0);
+    s.fact('guideSmallest', await read());
+    s.step('reload');
+    await reloadApp(s, 'the page with saved sizes');
+    await sleep(LAYOUT_SETTLE_MS);
+    s.fact('afterReload', await read());
+    s.step('double-click the left handle');
+    const spot = await center('#pane-left');
+    await s.mouse('mouseMoved', spot.x, spot.y, { buttons: 0 });
+    await s.evaluate(`document.getElementById('pane-left').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
+    await sleep(STILL_MS);
+    s.fact('afterReset', await read());
+    s.step('move a handle with the keyboard');
+    await s.evaluate(`document.getElementById('pane-left').focus()`);
+    const start = await s.evaluate(width('.browser'));
+    await s.key('ArrowRight');
+    s.fact('keyboard', { start, end: await s.evaluate(width('.browser')) });
+  },
+
+  /** Open the compare view, change the phases, follow a key, and choose a photo. */
+  async compare_view(s, config) {
+    await loadApp(s);
+    await s.key('p');
+    await openVideo(s, config, config.key2024);
+    const tiles = `[...document.querySelectorAll('#guide-images .compare-tile')].map((tile) => [tile.dataset.code, tile.dataset.tier])`;
+    s.step('press C');
+    await s.key('c');
+    await s.waitFor(`document.querySelectorAll('#guide-images .compare-tile').length > 0`, 'the compare panels');
+    s.fact('tiles', await s.evaluate(tiles));
+    s.fact('count', await s.evaluate(`document.getElementById('guide-count').textContent`));
+    s.fact('imagesLoaded', await s.evaluate(`document.querySelector('#guide-images .compare-tile img').getAttribute('src')`));
+    await s.shot('compare-1280x800');
+    s.step('show Phase 3');
+    await clickElement(s, '.compare-phase[data-tier="other"]');
+    s.fact('withPhase3', await s.evaluate(`document.querySelectorAll('#guide-images .compare-tile').length`));
+    await clickElement(s, '.compare-phase[data-tier="other"]');
+    s.step('turn every phase off, then back on');
+    await clickElement(s, '.compare-phase[data-tier="original"]');
+    await clickElement(s, '.compare-phase[data-tier="added"]');
+    s.fact('noPhases', await s.evaluate(`[document.querySelectorAll('.compare-tile').length, document.getElementById('guide-count').textContent]`));
+    await clickElement(s, '.compare-phase[data-tier="original"]');
+    await clickElement(s, '.compare-phase[data-tier="added"]');
+    s.step('close and reopen the guide');
+    await s.key('i');
+    await s.key('i');
+    await sleep(STILL_MS);
+    s.fact('rowAfterReopen', await s.evaluate(`parseInt(document.getElementById('guide-images').style.getPropertyValue('--compare-row'), 10)`));
+    s.step('rest the pointer on key 2');
+    const key = await s.evaluate(`(() => { const box = document.querySelector('.pin-slot[data-slot="2"] .pin-choose').getBoundingClientRect(); return { x: box.x + box.width / 2, y: box.y + box.height / 2 }; })()`);
+    await s.mouse('mouseMoved', key.x, key.y, { buttons: 0 });
+    await s.waitFor(`document.querySelector('.compare-tile[data-code="AFUL"][data-current="true"]')`, 'the panel of key 2 to light up');
+    s.fact('current', await s.evaluate(`document.querySelector('.compare-tile[data-current="true"]').dataset.code`));
+    s.step('open one species from its panel');
+    await clickElement(s, '.compare-tile[data-code="ACAU"] .compare-name');
+    await s.waitFor(`document.getElementById('guide').dataset.view === 'species' && document.querySelectorAll('#guide-images .guide-star').length > 0`, 'the species view');
+    s.fact('openedSpecies', await s.evaluate(`document.getElementById('guide-species').value`));
+    s.step('press Enter on a star');
+    await s.evaluate(`document.querySelectorAll('#guide-images .guide-star')[1].focus()`);
+    await s.key('Enter');
+    await s.waitFor(`document.querySelectorAll('#guide-images .guide-star')[1].getAttribute('aria-pressed') === 'true'`, 'Enter to choose the photo');
+    s.fact('largeAfterEnter', await s.evaluate(`Boolean(document.getElementById('guide-large'))`));
+    s.step('choose the third photo');
+    await s.evaluate(`document.querySelectorAll('#guide-images .guide-star')[2].click()`);
+    await s.waitFor(`document.querySelectorAll('#guide-images .guide-star')[2].getAttribute('aria-pressed') === 'true'`, 'the star to fill');
+    const chosen = await s.evaluate(`${S}.state.species.find((item) => item.code === 'ACAU').exemplar`);
+    s.fact('chosen', chosen);
+    await s.key('c');
+    await s.waitFor(`document.querySelector('.compare-tile[data-code="ACAU"] img')`, 'the panel again');
+    s.fact('panelPhoto', await s.evaluate(`document.querySelector('.compare-tile[data-code="ACAU"] img').getAttribute('src')`));
+    s.step('reload');
+    await reloadApp(s, 'the page in compare view');
+    await s.waitFor(`document.querySelectorAll('#guide-images .compare-tile').length > 0`, 'the compare panels after a reload');
+    s.fact('viewAfterReload', await s.evaluate(`document.getElementById('guide').dataset.view`));
+  },
+
   /** Save a sighting, click Export, and let Chrome download the zip. */
   async export_download(s, config) {
     await loadApp(s);
